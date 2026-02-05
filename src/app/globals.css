@@ -1,0 +1,203 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ===========================================
+   Custom Styles - CRM WhatsApp Tutts
+   =========================================== */
+
+@layer base {
+  :root {
+    --background: 255 255 255;
+    --foreground: 15 23 42;
+  }
+
+  html {
+    @apply scroll-smooth;
+  }
+
+  body {
+    @apply bg-gray-50 text-gray-900 antialiased;
+  }
+}
+
+@layer components {
+  /* Botões */
+  .btn {
+    @apply px-4 py-2 rounded-lg font-medium transition-all duration-200 
+           focus:outline-none focus:ring-2 focus:ring-offset-2
+           disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+
+  .btn-primary {
+    @apply btn bg-blue-600 text-white hover:bg-blue-700 focus:ring-blue-500;
+  }
+
+  .btn-secondary {
+    @apply btn bg-gray-200 text-gray-800 hover:bg-gray-300 focus:ring-gray-500;
+  }
+
+  .btn-success {
+    @apply btn bg-green-600 text-white hover:bg-green-700 focus:ring-green-500;
+  }
+
+  .btn-danger {
+    @apply btn bg-red-600 text-white hover:bg-red-700 focus:ring-red-500;
+  }
+
+  .btn-warning {
+    @apply btn bg-yellow-500 text-white hover:bg-yellow-600 focus:ring-yellow-500;
+  }
+
+  .btn-whatsapp {
+    @apply btn bg-green-500 text-white hover:bg-green-600 focus:ring-green-500;
+  }
+
+  .btn-sm {
+    @apply px-3 py-1.5 text-sm;
+  }
+
+  .btn-lg {
+    @apply px-6 py-3 text-lg;
+  }
+
+  /* Cards */
+  .card {
+    @apply bg-white rounded-xl shadow-sm border border-gray-200;
+  }
+
+  .card-header {
+    @apply px-4 py-3 border-b border-gray-200;
+  }
+
+  .card-body {
+    @apply p-4;
+  }
+
+  /* Inputs */
+  .input {
+    @apply w-full px-4 py-2 rounded-lg border border-gray-300 
+           focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent
+           transition-all duration-200;
+  }
+
+  .input-error {
+    @apply border-red-500 focus:ring-red-500;
+  }
+
+  /* Chat Bubbles */
+  .chat-bubble {
+    @apply max-w-[80%] px-4 py-2 rounded-2xl;
+  }
+
+  .chat-bubble-in {
+    @apply chat-bubble bg-gray-200 text-gray-900 rounded-bl-md;
+  }
+
+  .chat-bubble-out {
+    @apply chat-bubble bg-blue-600 text-white rounded-br-md;
+  }
+
+  /* Kanban */
+  .kanban-column {
+    @apply bg-gray-100 rounded-xl p-3 min-h-[400px] w-80 flex-shrink-0;
+  }
+
+  .kanban-card {
+    @apply bg-white rounded-lg shadow-sm p-3 mb-2 cursor-pointer
+           hover:shadow-md transition-shadow duration-200
+           border border-gray-200;
+  }
+
+  /* Tags */
+  .tag {
+    @apply inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium;
+  }
+
+  .tag-blue {
+    @apply tag bg-blue-100 text-blue-800;
+  }
+
+  .tag-green {
+    @apply tag bg-green-100 text-green-800;
+  }
+
+  .tag-yellow {
+    @apply tag bg-yellow-100 text-yellow-800;
+  }
+
+  .tag-red {
+    @apply tag bg-red-100 text-red-800;
+  }
+
+  .tag-gray {
+    @apply tag bg-gray-100 text-gray-800;
+  }
+
+  /* Stage badges - CORES MAIS VISÍVEIS */
+  .stage-novo {
+    @apply inline-flex items-center px-3 py-1 rounded-full text-xs font-bold 
+           bg-blue-500 text-white shadow-sm;
+  }
+
+  .stage-em_atendimento {
+    @apply inline-flex items-center px-3 py-1 rounded-full text-xs font-bold 
+           bg-yellow-500 text-white shadow-sm;
+  }
+
+  .stage-qualificado {
+    @apply inline-flex items-center px-3 py-1 rounded-full text-xs font-bold 
+           bg-green-500 text-white shadow-sm;
+  }
+
+  .stage-proposta {
+    @apply inline-flex items-center px-3 py-1 rounded-full text-xs font-bold 
+           bg-purple-500 text-white shadow-sm;
+  }
+
+  .stage-finalizado {
+    @apply inline-flex items-center px-3 py-1 rounded-full text-xs font-bold 
+           bg-gray-500 text-white shadow-sm;
+  }
+
+  /* IA Status */
+  .ia-ativa {
+    @apply text-green-600;
+  }
+
+  .ia-pause {
+    @apply text-red-600;
+  }
+
+  .ia-reativada {
+    @apply text-blue-600;
+  }
+}
+
+@layer utilities {
+  /* Scrollbar customizada */
+  .scrollbar-thin {
+    scrollbar-width: thin;
+  }
+
+  .scrollbar-thin::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  .scrollbar-thin::-webkit-scrollbar-track {
+    @apply bg-gray-100 rounded;
+  }
+
+  .scrollbar-thin::-webkit-scrollbar-thumb {
+    @apply bg-gray-300 rounded hover:bg-gray-400;
+  }
+
+  /* Truncate multi-line */
+  .line-clamp-2 {
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+}
