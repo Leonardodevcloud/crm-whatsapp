@@ -297,6 +297,7 @@ export async function POST(req: NextRequest) {
       telefone_normalizado: string;
       regiao: string;
       uploaded_by: number;
+      data_cadastro: string;
     }> = [];
 
     for (const lead of leads) {
