@@ -241,6 +241,7 @@ export interface LeadNaoIniciado {
   regiao: string;
   whatsappLink: string;
   created_at: string;
+  data_cadastro: string | null;
 }
 
 // POST: Receber lista de leads, filtrar e SALVAR no banco
@@ -256,7 +257,7 @@ export async function POST(req: NextRequest) {
   try {
     const client = supabaseAdmin || supabase;
     const body = await req.json();
-    const { leads } = body as { leads: Array<{ codigo: string; nome: string; telefone: string; data_ativacao?: string }> };
+    const { leads } = body as { leads: Array<{ codigo: string; nome: string; telefone: string; data_ativacao?: string; data_cadastro?: string }> };
 
     if (!leads || !Array.isArray(leads)) {
       return NextResponse.json(
@@ -370,6 +371,7 @@ export async function POST(req: NextRequest) {
           telefone_normalizado: telefoneNormalizado,
           regiao,
           uploaded_by: user.id,
+          data_cadastro: lead.data_cadastro || lead.data_ativacao || '',
         });
       }
     }
@@ -536,6 +538,7 @@ export async function GET(req: NextRequest) {
           regiao: lead.regiao,
           whatsappLink: `https://wa.me/55${lead.telefone_normalizado}`,
           created_at: lead.created_at,
+          data_cadastro: lead.data_cadastro || null,
         });
       }
     }

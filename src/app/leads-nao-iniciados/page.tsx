@@ -26,6 +26,7 @@ import {
   Trash2,
   FileSpreadsheet,
   CheckCircle,
+  Calendar,
 } from 'lucide-react';
 import { format } from 'date-fns';
 import clsx from 'clsx';
@@ -40,6 +41,7 @@ interface LeadNaoIniciado {
   regiao: string;
   whatsappLink: string;
   created_at: string;
+  data_cadastro: string | null;
 }
 
 interface ApiResponse {
@@ -81,6 +83,8 @@ function LeadsNaoIniciadosContent() {
   // Filtros
   const [regiaoFiltro, setRegiaoFiltro] = useState('');
   const [busca, setBusca] = useState('');
+  const [dataInicio, setDataInicio] = useState('');
+  const [dataFim, setDataFim] = useState('');
   
   // Estatísticas
   const [stats, setStats] = useState({
@@ -175,8 +179,22 @@ function LeadsNaoIniciadosContent() {
       );
     }
 
+    // Filtro por data de cadastro (DD/MM/YYYY → comparação)
+    if (dataInicio || dataFim) {
+      filtrados = filtrados.filter(l => {
+        if (!l.data_cadastro) return false;
+        // Converter DD/MM/YYYY para YYYY-MM-DD para comparação
+        const partes = l.data_cadastro.split('/');
+        if (partes.length !== 3) return false;
+        const dataISO = `${partes[2]}-${partes[1]}-${partes[0]}`;
+        if (dataInicio && dataISO < dataInicio) return false;
+        if (dataFim && dataISO > dataFim) return false;
+        return true;
+      });
+    }
+
     setLeadsFiltrados(filtrados);
-  }, [leads, regiaoFiltro, busca]);
+  }, [leads, regiaoFiltro, busca, dataInicio, dataFim]);
 
   // Processar arquivo Excel
   const processarArquivo = async (file: File) => {
@@ -199,6 +217,7 @@ function LeadsNaoIniciadosContent() {
       let nomeIdx = headerLower.findIndex(h => h.includes('nome') || h.includes('name'));
       let telefoneIdx = headerLower.findIndex(h => h.includes('tel') || h.includes('phone') || h.includes('celular') || h.includes('whatsapp'));
       let dataAtivacaoIdx = headerLower.findIndex(h => h.includes('data') && h.includes('ativa'));
+      let dataCadastroIdx = headerLower.findIndex(h => h.includes('data') && h.includes('cadastro'));
 
       // Se não encontrou, tenta posição padrão
       if (codigoIdx === -1) codigoIdx = 0;
@@ -206,8 +225,10 @@ function LeadsNaoIniciadosContent() {
       if (telefoneIdx === -1) telefoneIdx = 2;
       // Coluna F = índice 5 (padrão para Data Ativação)
       if (dataAtivacaoIdx === -1) dataAtivacaoIdx = 5;
+      // Data cadastro: se não encontrou coluna específica, usa a mesma da ativação
+      if (dataCadastroIdx === -1) dataCadastroIdx = dataAtivacaoIdx;
 
-      console.log('[Upload] Colunas encontradas:', { codigoIdx, nomeIdx, telefoneIdx, dataAtivacaoIdx });
+      console.log('[Upload] Colunas encontradas:', { codigoIdx, nomeIdx, telefoneIdx, dataAtivacaoIdx, dataCadastroIdx });
 
       // Extrair leads das linhas (pula header)
       const leadsExtraidos = [];
@@ -234,11 +255,27 @@ function LeadsNaoIniciadosContent() {
           }
         }
 
+        // Extrair data de cadastro
+        let dataCadastro = '';
+        const dataCadRaw = row[dataCadastroIdx];
+        if (dataCadRaw) {
+          if (typeof dataCadRaw === 'number') {
+            const excelDate = new Date((dataCadRaw - 25569) * 86400 * 1000);
+            const dia = String(excelDate.getDate()).padStart(2, '0');
+            const mes = String(excelDate.getMonth() + 1).padStart(2, '0');
+            const ano = excelDate.getFullYear();
+            dataCadastro = `${dia}/${mes}/${ano}`;
+          } else {
+            dataCadastro = dataCadRaw.toString().trim();
+          }
+        }
+
         leadsExtraidos.push({
           codigo: row[codigoIdx]?.toString().trim() || '',
           nome: row[nomeIdx]?.toString().trim() || '',
           telefone,
           data_ativacao: dataAtivacao,
+          data_cadastro: dataCadastro || dataAtivacao,
         });
       }
 
@@ -542,6 +579,35 @@ function LeadsNaoIniciadosContent() {
                 />
               </div>
 
+              {/* Filtro por Data de Cadastro */}
+              <div className="flex items-center gap-2">
+                <Calendar className="w-4 h-4 text-gray-400" />
+                <input
+                  type="date"
+                  value={dataInicio}
+                  onChange={(e) => setDataInicio(e.target.value)}
+                  className="px-2 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm"
+                  title="Data cadastro - De"
+                />
+                <span className="text-xs text-gray-400">até</span>
+                <input
+                  type="date"
+                  value={dataFim}
+                  onChange={(e) => setDataFim(e.target.value)}
+                  className="px-2 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm"
+                  title="Data cadastro - Até"
+                />
+                {(dataInicio || dataFim) && (
+                  <button
+                    onClick={() => { setDataInicio(''); setDataFim(''); }}
+                    className="text-xs text-red-500 hover:text-red-700"
+                    title="Limpar filtro de data"
+                  >
+                    ✕
+                  </button>
+                )}
+              </div>
+
               <span className="text-xs text-gray-400">
                 Verifica CRM + 10 leads/Tutts a cada 2 min
               </span>
@@ -600,6 +666,12 @@ function LeadsNaoIniciadosContent() {
                     </th>
                     <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                       <div className="flex items-center gap-1">
+                        <Calendar className="w-3 h-3" />
+                        Data Cadastro
+                      </div>
+                    </th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      <div className="flex items-center gap-1">
                         <MessageCircle className="w-3 h-3" />
                         WhatsApp
                       </div>
@@ -609,7 +681,7 @@ function LeadsNaoIniciadosContent() {
                 <tbody className="divide-y divide-gray-200">
                   {leadsFiltrados.length === 0 ? (
                     <tr>
-                      <td colSpan={5} className="px-4 py-8 text-center text-gray-500">
+                      <td colSpan={6} className="px-4 py-8 text-center text-gray-500">
                         <Users className="w-12 h-12 mx-auto mb-2 text-gray-300" />
                         <p>Nenhum lead encontrado</p>
                       </td>
@@ -641,6 +713,11 @@ function LeadsNaoIniciadosContent() {
                         <td className="px-4 py-3 whitespace-nowrap">
                           <span className="px-2 py-1 bg-purple-100 text-purple-700 rounded-full text-sm">
                             {lead.regiao}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3 whitespace-nowrap">
+                          <span className="text-sm text-gray-600">
+                            {lead.data_cadastro || '---'}
                           </span>
                         </td>
                         <td className="px-4 py-3 whitespace-nowrap">
