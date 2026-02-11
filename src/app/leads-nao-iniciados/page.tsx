@@ -179,14 +179,23 @@ function LeadsNaoIniciadosContent() {
       );
     }
 
-    // Filtro por data de cadastro (DD/MM/YYYY → comparação)
+    // Filtro por data de cadastro
     if (dataInicio || dataFim) {
       filtrados = filtrados.filter(l => {
         if (!l.data_cadastro) return false;
-        // Converter DD/MM/YYYY para YYYY-MM-DD para comparação
-        const partes = l.data_cadastro.split('/');
-        if (partes.length !== 3) return false;
-        const dataISO = `${partes[2]}-${partes[1]}-${partes[0]}`;
+        let dataISO = '';
+        // Formato DD/MM/YYYY → YYYY-MM-DD
+        if (l.data_cadastro.includes('/')) {
+          const partes = l.data_cadastro.split('/');
+          if (partes.length !== 3) return false;
+          dataISO = `${partes[2]}-${partes[1]}-${partes[0]}`;
+        } 
+        // Já está em YYYY-MM-DD
+        else if (/^\d{4}-\d{2}-\d{2}/.test(l.data_cadastro)) {
+          dataISO = l.data_cadastro.substring(0, 10);
+        } else {
+          return false;
+        }
         if (dataInicio && dataISO < dataInicio) return false;
         if (dataFim && dataISO > dataFim) return false;
         return true;
@@ -217,7 +226,7 @@ function LeadsNaoIniciadosContent() {
       let nomeIdx = headerLower.findIndex(h => h.includes('nome') || h.includes('name'));
       let telefoneIdx = headerLower.findIndex(h => h.includes('tel') || h.includes('phone') || h.includes('celular') || h.includes('whatsapp'));
       let dataAtivacaoIdx = headerLower.findIndex(h => h.includes('data') && h.includes('ativa'));
-      let dataCadastroIdx = headerLower.findIndex(h => h.includes('data') && h.includes('cadastro'));
+      let dataCadastroIdx = headerLower.findIndex(h => h.includes('cadastro'));
 
       // Se não encontrou, tenta posição padrão
       if (codigoIdx === -1) codigoIdx = 0;
@@ -225,7 +234,7 @@ function LeadsNaoIniciadosContent() {
       if (telefoneIdx === -1) telefoneIdx = 2;
       // Coluna F = índice 5 (padrão para Data Ativação)
       if (dataAtivacaoIdx === -1) dataAtivacaoIdx = 5;
-      // Data cadastro: se não encontrou coluna específica, usa a mesma da ativação
+      // Data cadastro: se não encontrou, usa data ativação como fallback
       if (dataCadastroIdx === -1) dataCadastroIdx = dataAtivacaoIdx;
 
       console.log('[Upload] Colunas encontradas:', { codigoIdx, nomeIdx, telefoneIdx, dataAtivacaoIdx, dataCadastroIdx });
@@ -251,7 +260,13 @@ function LeadsNaoIniciadosContent() {
             const ano = excelDate.getFullYear();
             dataAtivacao = `${dia}/${mes}/${ano}`;
           } else {
-            dataAtivacao = dataRaw.toString().trim();
+            const raw = dataRaw.toString().trim();
+            if (/^\d{4}-\d{2}-\d{2}/.test(raw)) {
+              const [ano, mes, dia] = raw.substring(0, 10).split('-');
+              dataAtivacao = `${dia}/${mes}/${ano}`;
+            } else {
+              dataAtivacao = raw;
+            }
           }
         }
 
@@ -266,7 +281,14 @@ function LeadsNaoIniciadosContent() {
             const ano = excelDate.getFullYear();
             dataCadastro = `${dia}/${mes}/${ano}`;
           } else {
-            dataCadastro = dataCadRaw.toString().trim();
+            const raw = dataCadRaw.toString().trim();
+            // Se vier no formato ISO (YYYY-MM-DD), converter para DD/MM/YYYY
+            if (/^\d{4}-\d{2}-\d{2}/.test(raw)) {
+              const [ano, mes, dia] = raw.substring(0, 10).split('-');
+              dataCadastro = `${dia}/${mes}/${ano}`;
+            } else {
+              dataCadastro = raw;
+            }
           }
         }
 
