@@ -278,15 +278,13 @@ export async function POST(req: NextRequest) {
           }
         }
 
-        // Cruzar com planilha TP
-        for (const v of variacoes) {
-          const tp = mapaTP.get(v);
-          if (tp) {
-            const tagsAtuais: string[] = Array.isArray(lead.tags) ? lead.tags : [];
-            if (!tagsAtuais.includes(tp)) {
-              updateData.tags = [...tagsAtuais, tp];
-            }
-            break;
+        // Cruzar com planilha TP (match EXATO, sem variações com/sem 9)
+        const telNormExato = normalizarTelefone(lead.telefone);
+        const tpExato = mapaTP.get(telNormExato) || mapaTP.get('55' + telNormExato);
+        if (tpExato) {
+          const tagsAtuais: string[] = Array.isArray(lead.tags) ? lead.tags : [];
+          if (!tagsAtuais.includes(tpExato)) {
+            updateData.tags = [...tagsAtuais, tpExato];
           }
         }
 

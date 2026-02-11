@@ -291,13 +291,13 @@ export async function POST(req: NextRequest) {
           }
         }
 
-        // Buscar na planilha de TP
+        // Buscar na planilha de TP (match EXATO, sem variações com/sem 9)
         let tagTP: string | null = null;
-        for (const variacao of variacoes) {
-          if (mapaTP.has(variacao)) {
-            tagTP = mapaTP.get(variacao)!;
-            break;
-          }
+        const telNorm = normalizarTelefone(lead.telefone);
+        if (mapaTP.has(telNorm)) {
+          tagTP = mapaTP.get(telNorm)!;
+        } else if (mapaTP.has('55' + telNorm)) {
+          tagTP = mapaTP.get('55' + telNorm)!;
         }
 
         // Preparar update
