@@ -98,6 +98,10 @@
     @apply chat-bubble bg-blue-600 text-white rounded-br-md;
   }
 
+  .chat-bubble-human {
+    @apply chat-bubble bg-green-600 text-white rounded-br-md;
+  }
+
   /* Kanban */
   .kanban-column {
     @apply bg-gray-100 rounded-xl p-3 min-h-[400px] w-80 flex-shrink-0;

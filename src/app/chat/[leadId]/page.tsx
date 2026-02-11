@@ -416,8 +416,12 @@ function ChatContent({ leadId }: { leadId: string }) {
         ) : (
           <div className="space-y-4 max-w-3xl mx-auto">
             {messages.map((msg, index) => {
-              // Aceita 'in'/'incoming' como mensagem do cliente
+              // 3 tipos de direction:
+              // incoming/in = lead mandou
+              // outcoming/out = IA mandou (via API)
+              // outgoing_human = humano mandou (pelo celular)
               const isIncoming = msg.direction === 'in' || msg.direction === 'incoming';
+              const isHumanOutgoing = msg.direction === 'outgoing_human';
               const showDate =
                 index === 0 ||
                 format(new Date(msg.created_at), 'yyyy-MM-dd') !==
@@ -443,17 +447,19 @@ function ChatContent({ leadId }: { leadId: string }) {
                   >
                     <div
                       className={clsx(
-                        isIncoming ? 'chat-bubble-in' : 'chat-bubble-out'
+                        isIncoming ? 'chat-bubble-in' : isHumanOutgoing ? 'chat-bubble-human' : 'chat-bubble-out'
                       )}
                     >
                       {/* Nome do remetente */}
                       <div className={clsx(
                         'text-xs font-semibold mb-1',
-                        isIncoming ? 'text-gray-600' : 'text-blue-200'
+                        isIncoming ? 'text-gray-600' : isHumanOutgoing ? 'text-green-200' : 'text-blue-200'
                       )}>
                         {isIncoming 
-                          ? (lead?.iniciado_por === 'humano' ? '👤 Lead' : (lead?.nomewpp || 'Cliente'))
-                          : (lead?.iniciado_por === 'humano' ? '💬 Atendente' : '🤖 Tatiane Bot')
+                          ? (lead?.nomewpp || 'Cliente')
+                          : isHumanOutgoing
+                            ? '💬 Atendente'
+                            : '🤖 Tatiane Bot'
                         }
                       </div>
 

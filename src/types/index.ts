@@ -67,7 +67,7 @@ export interface ChatMessage {
   id: string; // UUID
   created_at: string;
   chat_id: string;
-  direction: 'in' | 'out' | 'incoming' | 'outcoming' | string; // in/incoming = cliente, out/outcoming = bot/agente
+  direction: 'in' | 'out' | 'incoming' | 'outcoming' | 'outgoing_human' | string; // in/incoming = cliente, out/outcoming = bot, outgoing_human = atendente humano
   message_type: 'text' | 'image' | 'audio' | 'video' | 'document' | string;
   body: string | null;
   media_url: string | null;
