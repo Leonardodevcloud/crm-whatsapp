@@ -105,8 +105,10 @@ function ComboSelect({ value, options, onSelect, onAddNew, placeholder }: {
 
   return (
     <select value={value} onChange={(e) => handleSelect(e.target.value)}
-      className="w-full px-2 py-1.5 text-xs border border-gray-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-purple-500">
+      className={clsx('w-full px-2 py-1.5 text-xs border rounded-lg focus:outline-none focus:ring-1 focus:ring-purple-500',
+        value ? 'border-gray-300 text-gray-800' : 'border-gray-200 text-gray-400')}>
       <option value="">{placeholder}</option>
+      {value && !options.includes(value) && <option value={value}>{value}</option>}
       {options.map(o => <option key={o} value={o}>{o}</option>)}
       <option value="__novo__">+ Novo...</option>
     </select>
