@@ -1,7 +1,7 @@
 // ===========================================
 // API: /api/chat/[leadId]
 // GET: Retorna lead, chat e mensagens
-// + Verificação automática do status na API Tutts
+// v2 - Passa chatLid para todas as buscas de mensagens
 // ===========================================
 
 import { NextRequest, NextResponse } from 'next/server';
@@ -13,41 +13,25 @@ export async function GET(
   req: NextRequest,
   { params }: { params: Promise<{ leadId: string }> }
 ) {
-  // Verificar autenticação
   const authHeader = req.headers.get('authorization');
   const user = getUserFromHeader(authHeader);
-
   if (!user) {
-    return NextResponse.json(
-      { error: 'Não autenticado', success: false },
-      { status: 401 }
-    );
+    return NextResponse.json({ error: 'Não autenticado', success: false }, { status: 401 });
   }
 
   try {
     const { leadId } = await params;
     const leadIdNum = parseInt(leadId);
-
     if (isNaN(leadIdNum)) {
-      return NextResponse.json(
-        { error: 'ID do lead inválido', success: false },
-        { status: 400 }
-      );
+      return NextResponse.json({ error: 'ID do lead inválido', success: false }, { status: 400 });
     }
 
-    // Buscar lead
     let lead = await getLeadById(leadIdNum);
     if (!lead) {
-      return NextResponse.json(
-        { error: 'Lead não encontrado', success: false },
-        { status: 404 }
-      );
+      return NextResponse.json({ error: 'Lead não encontrado', success: false }, { status: 404 });
     }
 
-    // ============================================
-    // VERIFICAÇÃO AUTOMÁTICA NA API TUTTS
-    // ============================================
-    // Só verifica se o lead ainda não foi finalizado e tem telefone
+    // Verificação automática na API Tutts
     let tuttsStatus = null;
     let stageAtualizado = false;
     
@@ -55,50 +39,37 @@ export async function GET(
       try {
         const statusTutts = await verificarStatusProfissional(lead.telefone);
         tuttsStatus = statusTutts;
-        
-        // Determinar se precisa mudar o stage
         const novoStage = determinarNovoStage(statusTutts, lead.stage);
-        
         if (novoStage && novoStage !== lead.stage) {
-          console.log(`[Chat API] Atualizando stage do lead ${leadIdNum}: ${lead.stage} -> ${novoStage}`);
-          
-          // Atualizar o lead no banco
+          console.log(`[Chat API] Stage: ${lead.stage} -> ${novoStage}`);
           const leadAtualizado = await updateLead(leadIdNum, { stage: novoStage });
-          
-          if (leadAtualizado) {
-            lead = leadAtualizado;
-            stageAtualizado = true;
-          }
+          if (leadAtualizado) { lead = leadAtualizado; stageAtualizado = true; }
         }
       } catch (tuttsError) {
-        console.error('[Chat API] Erro ao verificar status Tutts:', tuttsError);
-        // Não bloqueia a requisição se falhar a verificação
+        console.error('[Chat API] Erro Tutts:', tuttsError);
       }
     }
 
-    // Buscar chat associado (por telefone)
+    // Buscar chat (cascata: chat_lid → lead_id → phone)
     const chat = await getChatByLeadId(leadIdNum);
 
-    // Buscar mensagens de múltiplas fontes
+    // Buscar mensagens — 3 fontes em cascata
     let messages: any[] = [];
+    const chatLid = lead.chat_lid || null;
     
+    // Fonte 1: chat_messages pelo chat_id
     if (chat) {
-      // Se encontrou chat, busca mensagens pelo chat_id
       messages = await getChatMessages(chat.id, 200);
     }
     
-    // Se não encontrou mensagens no chat_messages, tenta buscar por telefone
-    if (messages.length === 0 && lead.telefone) {
-      messages = await getChatMessagesByPhone(lead.telefone, 200);
+    // Fonte 2: chat_messages pelo phone/chatLid (com deduplicação)
+    if (messages.length === 0 && (lead.telefone || chatLid)) {
+      messages = await getChatMessagesByPhone(lead.telefone || '', 200, chatLid);
     }
     
-    // Se ainda não tem mensagens, busca no histórico do n8n (n8n_chat_histories)
-    // Esta tabela é usada quando a conversa é "iniciada por humano"
-    if (messages.length === 0 && lead.telefone) {
-      const n8nMessages = await getN8nChatHistory(lead.telefone, 200);
-      if (n8nMessages.length > 0) {
-        messages = n8nMessages;
-      }
+    // Fonte 3: n8n_chat_histories (fallback, conversas humanas/IA)
+    if (messages.length === 0 && (lead.telefone || chatLid)) {
+      messages = await getN8nChatHistory(lead.telefone || '', 200, chatLid);
     }
 
     return NextResponse.json({
@@ -107,7 +78,6 @@ export async function GET(
         lead,
         chat,
         messages,
-        // Info extra sobre verificação Tutts
         tuttsVerificacao: tuttsStatus ? {
           encontrado: tuttsStatus.found,
           ativo: tuttsStatus.ativo,

@@ -28,7 +28,7 @@ function LoginForm() {
   // Redirecionar se já autenticado
   useEffect(() => {
     if (!authLoading && isAuthenticated) {
-      router.push('/inbox');
+      router.push('/kanban');
     }
   }, [isAuthenticated, authLoading, router]);
 
@@ -54,7 +54,7 @@ function LoginForm() {
     const success = login(tokenValue.trim());
     
     if (success) {
-      router.push('/inbox');
+      router.push('/kanban');
     } else {
       setError('Token inválido ou expirado');
     }

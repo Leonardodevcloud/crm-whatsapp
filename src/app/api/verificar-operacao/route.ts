@@ -4,23 +4,46 @@
 // Cruza CRM + Planilha Profissionais (deduplicado)
 // ===========================================
 
+export const dynamic = 'force-dynamic';
+
 import { NextRequest, NextResponse } from 'next/server';
 import { getUserFromHeader } from '@/lib/auth';
 import { supabase, supabaseAdmin } from '@/lib/supabase';
 
 const BI_API_URL = process.env.BI_API_URL || 'https://tutts-backend-production.up.railway.app';
+const CRM_SERVICE_KEY = process.env.CRM_SERVICE_KEY || '';
 const PLANILHA_CSV_URL = 'https://docs.google.com/spreadsheets/d/1d7jI-q7OjhH5vU69D3Vc_6Boc9xjLZPVR8efjMo1yAE/export?format=csv&gid=0';
+
+// Parser CSV robusto — lida com vírgulas dentro de campos entre aspas
+function parseCSVLine(line: string): string[] {
+  const result: string[] = [];
+  let current = '';
+  let inQuotes = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (ch === '"') {
+      inQuotes = !inQuotes;
+    } else if (ch === ',' && !inQuotes) {
+      result.push(current.trim());
+      current = '';
+    } else if (ch !== '\r') {
+      current += ch;
+    }
+  }
+  result.push(current.trim());
+  return result;
+}
 
 function parseCSV(csvText: string): Record<string, string>[] {
   const cleanText = csvText.replace(/^\uFEFF/, '');
   const linhas = cleanText.split('\n');
   if (linhas.length < 2) return [];
-  const headers = linhas[0].split(',').map(h => h.trim().replace(/"/g, '').replace(/^\uFEFF/, ''));
+  const headers = parseCSVLine(linhas[0]).map(h => h.replace(/^\uFEFF/, ''));
   const dados: Record<string, string>[] = [];
   for (let i = 1; i < linhas.length; i++) {
     const linha = linhas[i];
     if (!linha.trim()) continue;
-    const valores = linha.split(',').map(v => v.trim().replace(/"/g, ''));
+    const valores = parseCSVLine(linha);
     const obj: Record<string, string> = {};
     headers.forEach((header, index) => { obj[header] = valores[index] || ''; });
     dados.push(obj);
@@ -172,16 +195,22 @@ export async function GET(req: NextRequest) {
 
     let biResult = null;
     try {
+      console.log(`[CRM→BI] URL: ${BI_API_URL}/api/crm/verificar-operacao | service-key: ${CRM_SERVICE_KEY ? CRM_SERVICE_KEY.substring(0, 10) + '...' : 'NÃO CONFIGURADA'} | codigos: ${codigos.length}`);
       const biResponse = await fetch(`${BI_API_URL}/api/crm/verificar-operacao`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+          'Content-Type': 'application/json',
+          ...(CRM_SERVICE_KEY ? { 'x-service-key': CRM_SERVICE_KEY } : {}),
+        },
         body: JSON.stringify({ codigos, dias }),
       });
 
+      console.log(`[CRM→BI] Response status: ${biResponse.status}`);
       if (biResponse.ok) {
         biResult = await biResponse.json();
       } else {
-        console.error('Erro na API do BI:', biResponse.status);
+        const errText = await biResponse.text();
+        console.error('Erro na API do BI:', biResponse.status, errText.substring(0, 200));
       }
     } catch (biError) {
       console.error('Erro ao conectar no BI:', biError);
@@ -250,7 +279,10 @@ export async function POST(req: NextRequest) {
 
     const biResponse = await fetch(`${BI_API_URL}/api/crm/verificar-operacao`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 
+        'Content-Type': 'application/json',
+        ...(CRM_SERVICE_KEY ? { 'x-service-key': CRM_SERVICE_KEY } : {}),
+      },
       body: JSON.stringify({ codigos, dias }),
     });
 

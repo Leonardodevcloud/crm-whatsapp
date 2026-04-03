@@ -166,7 +166,7 @@ function ChatContent({ leadId }: { leadId: string }) {
         <div className="text-center">
           <AlertCircle className="w-12 h-12 text-red-500 mx-auto mb-4" />
           <p className="text-gray-600">Lead não encontrado</p>
-          <button onClick={() => router.push('/inbox')} className="btn-primary mt-4">
+          <button onClick={() => router.push('/kanban')} className="btn-primary mt-4">
             Voltar para Inbox
           </button>
         </div>
@@ -184,7 +184,7 @@ function ChatContent({ leadId }: { leadId: string }) {
         <div className="flex items-center gap-4">
           {/* Voltar */}
           <button
-            onClick={() => router.push('/inbox')}
+            onClick={() => router.push('/kanban')}
             className="p-2 hover:bg-gray-100 rounded-lg transition-colors"
           >
             <ArrowLeft className="w-5 h-5" />

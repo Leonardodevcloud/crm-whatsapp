@@ -9,10 +9,9 @@ export default function HomePage() {
   const router = useRouter();
 
   useEffect(() => {
-    // Verificar se tem token
     const token = localStorage.getItem('tutts_crm_token');
     if (token) {
-      router.push('/inbox');
+      router.push('/analytics');
     } else {
       router.push('/login');
     }

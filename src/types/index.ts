@@ -1,5 +1,6 @@
 // ===========================================
 // Types - CRM WhatsApp Tutts
+// ATUALIZADO: Refletindo schema real do banco
 // ===========================================
 
 // ==================== AUTH ====================
@@ -44,6 +45,14 @@ export interface Lead {
   cod_profissional?: string | null;
   // Resumo gerado pela IA
   resumo_ia?: string | null;
+  // Data de ativação (importada da planilha)
+  data_ativacao?: string | null;
+  // Controle de enriquecimento
+  last_enriched_at?: string | null;
+  // Identificadores Z-API/WhatsApp (usados pelo n8n)
+  remotejid?: string | null;
+  chat_lid?: string | null;
+  remote_jid?: string | null;
 }
 
 // Tabela: chats
@@ -59,7 +68,11 @@ export interface Chat {
   status: 'open' | 'closed' | string;
   assigned_user_id: string | null;
   last_message_at: string | null;
+  // 5 colunas de identificação de contato no schema real:
   phone: string | null;
+  remotejid: string | null;
+  chat_lid: string | null;
+  telefone: string | null;
 }
 
 // Tabela: chat_messages
@@ -67,7 +80,7 @@ export interface ChatMessage {
   id: string; // UUID
   created_at: string;
   chat_id: string;
-  direction: 'in' | 'out' | 'incoming' | 'outcoming' | 'outgoing_human' | string; // in/incoming = cliente, out/outcoming = bot, outgoing_human = atendente humano
+  direction: 'in' | 'out' | 'incoming' | 'outcoming' | 'outgoing_human' | string;
   message_type: 'text' | 'image' | 'audio' | 'video' | 'document' | string;
   body: string | null;
   media_url: string | null;
@@ -79,11 +92,67 @@ export interface ChatMessage {
   lead_id: number | null;
 }
 
+// Tabela: n8n_chat_histories (schema REAL - NÃO tem created_at)
+export interface N8nChatHistory {
+  id: number;
+  session_id: string;
+  message: Record<string, any> | string;
+}
+
+// Tabela: followups
+export interface Followup {
+  id: number;
+  lead_id: number;
+  data_agendada: string;
+  motivo: string;
+  notas: string | null;
+  status: 'pendente' | 'concluido' | 'cancelado';
+  tipo: 'manual' | 'automatico';
+  sequencia: number;
+  created_at: string;
+  completed_at: string | null;
+  criado_por: number | null;
+}
+
+// Tabela: leads_nao_iniciados
+export interface LeadNaoIniciado {
+  id: number;
+  codigo: string | null;
+  nome: string | null;
+  telefone: string;
+  telefone_normalizado: string;
+  regiao: string | null;
+  created_at: string;
+  uploaded_by: number | null;
+  data_cadastro: string | null;
+}
+
+// Tabela: profissionais_observacoes
+export interface ProfissionalObservacao {
+  id: number;
+  codigo: string;
+  telefone: string | null;
+  observacao: string;
+  updated_at: string;
+  updated_by: string | null;
+  created_at: string;
+}
+
+// Tabela: documents (existe no banco, sem uso no código ainda)
+export interface Document {
+  id: string;
+  created_at: string;
+  lead_id: number | null;
+  chat_id: string | null;
+  file_name: string;
+  file_type: string | null;
+  storage_path: string;
+  metadata: Record<string, any>;
+}
+
 // ==================== API RESPONSES ====================
 
-// Inbox item (lead + chat combinado)
 export interface InboxItem {
-  // Dados do Lead
   lead_id: number;
   lead_uuid: string;
   telefone: string;
@@ -96,20 +165,15 @@ export interface InboxItem {
   iniciado_por: 'lead' | 'humano' | null;
   cod_profissional: string | null;
   resumo_ia: string | null;
-  
-  // Dados do Chat
   chat_id: string | null;
   chat_status: string | null;
   last_message_at: string | null;
   last_message_preview: string | null;
   unread_count: number;
-  
-  // Follow-up pendente
   followup_data: string | null;
   followup_motivo: string | null;
 }
 
-// Chat detail (para página de conversa)
 export interface ChatDetail {
   lead: Lead;
   chat: Chat | null;

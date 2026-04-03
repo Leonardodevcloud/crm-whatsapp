@@ -17,7 +17,7 @@ import { verificarStatusProfissional, determinarNovoStage } from '@/lib/tutts-ap
 
 const CRON_SECRET = process.env.CRON_SECRET || 'tutts-cron-2026';
 const PLANILHA_CSV_URL = 'https://docs.google.com/spreadsheets/d/1d7jI-q7OjhH5vU69D3Vc_6Boc9xjLZPVR8efjMo1yAE/export?format=csv&gid=0';
-const PLANILHA_TP_URL = 'https://docs.google.com/spreadsheets/d/1fC1i_qTiUmX77-Y5iRjGIJRzMSifPUSeULe_Thh1rZU/export?format=csv&gid=0';
+const PLANILHA_TP_URL = 'https://docs.google.com/spreadsheets/d/1MOttPq20kzgnTY5Rv_9ocJNsp3ZFad0_xt_M96utES8/export?format=csv&gid=0';
 
 // Limites para não sobrecarregar
 const LIMITE_TUTTS_POR_EXECUCAO = 50;   // Máx leads pra verificar na API Tutts por run
@@ -67,19 +67,39 @@ function gerarVariacoesTelefone(telefone: string): string[] {
   return variacoes;
 }
 
+// Parser CSV robusto — lida com vírgulas dentro de campos entre aspas
+function parseCSVLine(line: string): string[] {
+  const result: string[] = [];
+  let current = '';
+  let inQuotes = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (ch === '"') {
+      inQuotes = !inQuotes;
+    } else if (ch === ',' && !inQuotes) {
+      result.push(current.trim());
+      current = '';
+    } else if (ch !== '\r') {
+      current += ch;
+    }
+  }
+  result.push(current.trim());
+  return result;
+}
+
 function parseCSV(csvText: string): Record<string, string>[] {
   const cleanText = csvText.replace(/^\uFEFF/, '');
   const linhas = cleanText.split('\n');
   if (linhas.length < 2) return [];
-  const headers = linhas[0].split(',').map(h =>
-    h.trim().replace(/"/g, '').replace(/^\uFEFF/, '')
+  const headers = parseCSVLine(linhas[0]).map(h =>
+    h.replace(/^\uFEFF/, '')
       .normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
   );
   const dados: Record<string, string>[] = [];
   for (let i = 1; i < linhas.length; i++) {
     const linha = linhas[i];
     if (!linha.trim()) continue;
-    const valores = linha.split(',').map(v => v.trim().replace(/"/g, ''));
+    const valores = parseCSVLine(linha);
     const obj: Record<string, string> = {};
     headers.forEach((header, index) => { obj[header] = valores[index] || ''; });
     dados.push(obj);
@@ -234,7 +254,7 @@ export async function POST(req: NextRequest) {
       console.error('[CRON] Erro planilha principal:', e.message);
     }
 
-    // Planilha TP
+    // Planilha TP — popular com TODAS as variações de telefone
     const mapaTP = new Map<string, string>();
     try {
       const resp = await fetch(PLANILHA_TP_URL, { headers: { 'Accept': 'text/csv' } });
@@ -244,12 +264,15 @@ export async function POST(req: NextRequest) {
         dados.forEach(row => {
           const telefone = row['phone'] || row['telefone'] || '';
           const tp = row['tp'] || '';
-          if (telefone && tp) {
-            const norm = normalizarTelefone(telefone);
-            if (norm) mapaTP.set(norm, tp.trim());
+          if (telefone && tp && tp.startsWith('TP')) {
+            // Indexar por TODAS as variações para maximizar match
+            const variacoes = gerarVariacoesTelefone(telefone);
+            for (const v of variacoes) {
+              mapaTP.set(v, tp.trim());
+            }
           }
         });
-        console.log(`[CRON] Planilha TP: ${mapaTP.size} registros`);
+        console.log(`[CRON] Planilha TP: ${mapaTP.size} entradas (com variações)`);
       }
     } catch (e: any) {
       console.error('[CRON] Erro planilha TP:', e.message);
@@ -278,13 +301,18 @@ export async function POST(req: NextRequest) {
           }
         }
 
-        // Cruzar com planilha TP (match EXATO, sem variações com/sem 9)
-        const telNormExato = normalizarTelefone(lead.telefone);
-        const tpExato = mapaTP.get(telNormExato) || mapaTP.get('55' + telNormExato);
-        if (tpExato) {
+        // Cruzar com planilha TP (usa TODAS as variações para máximo match)
+        let tagTP: string | null = null;
+        for (const v of variacoes) {
+          if (mapaTP.has(v)) {
+            tagTP = mapaTP.get(v)!;
+            break;
+          }
+        }
+        if (tagTP) {
           const tagsAtuais: string[] = Array.isArray(lead.tags) ? lead.tags : [];
-          if (!tagsAtuais.includes(tpExato)) {
-            updateData.tags = [...tagsAtuais, tpExato];
+          if (!tagsAtuais.includes(tagTP)) {
+            updateData.tags = [...tagsAtuais, tagTP];
           }
         }
 

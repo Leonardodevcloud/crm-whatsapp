@@ -1,792 +1,666 @@
 'use client';
 
-// ===========================================
-// Página Leads Não Iniciados
-// Upload de Excel, filtra quem NÃO está no CRM
-// Região automática por DDD, WhatsApp clicável
-// Remove automaticamente quando virar lead
-// ===========================================
-
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import AuthLayout from '@/components/AuthLayout';
 import { useApi } from '@/lib/hooks';
 import {
-  Upload,
-  Users,
-  Loader2,
-  AlertCircle,
-  MapPin,
-  Phone,
-  Hash,
-  User,
-  Download,
-  Filter,
-  Search,
-  MessageCircle,
-  Trash2,
-  FileSpreadsheet,
-  CheckCircle,
-  Calendar,
+  Bot, Users, Loader2, AlertCircle, MapPin, Phone, Hash, User, Search,
+  MessageCircle, CheckCircle, XCircle, Clock, Play, RefreshCw,
+  ChevronLeft, ChevronRight, Calendar, Zap, FileText,
 } from 'lucide-react';
-import { format } from 'date-fns';
+import { format, formatDistanceToNow } from 'date-fns';
+import { ptBR } from 'date-fns/locale';
 import clsx from 'clsx';
-import * as XLSX from 'xlsx';
 
-interface LeadNaoIniciado {
+// ── Types ──────────────────────────────────────────────────
+interface LeadCapturado {
   id: number;
-  codigo: string;
+  cod: string;
   nome: string;
-  telefone: string;
+  celular: string;
+  telefone_fixo: string;
   telefone_normalizado: string;
-  regiao: string;
-  whatsappLink: string;
-  created_at: string;
+  email: string;
+  categoria: string;
   data_cadastro: string | null;
+  regiao: string;
+  estado: string;
+  status_api: string | null;
+  quem_ativou: string | null;
+  observacao: string | null;
+  data_ativacao: string | null;
+  capturado_em: string;
 }
 
-interface ApiResponse {
-  success: boolean;
-  data: {
-    leads: LeadNaoIniciado[];
-    total: number;
-    removidos: number;
-    removidosTutts: number;
-    porRegiao: Record<string, number>;
-    regioes: string[];
-  };
+interface Stats {
+  total: number;
+  ativos: number;
+  inativos: number;
+  nao_encontrados: number;
+  sem_verificacao: number;
+  total_regioes: number;
+  porRegiao: { regiao: string; quantidade: number }[];
+  ultimoJob: any | null;
+  captura_em_andamento: boolean;
 }
 
-interface UploadResponse {
-  success: boolean;
-  data: {
-    totalRecebidos: number;
-    jaNoCRM: number;
-    enriquecidos: number;
-    novosInseridos: number;
-    duplicados: number;
-    totalNaLista: number;
-    porRegiao: Record<string, number>;
-  };
-  message: string;
-}
+// ── Inline editable cell: Quem Ativou ──────────────────────
+function QuemAtivouCell({ lead, ativadores, onSave }: {
+  lead: LeadCapturado;
+  ativadores: string[];
+  onSave: (id: number, valor: string) => void;
+}) {
+  const [editando, setEditando] = useState(false);
+  const [customNome, setCustomNome] = useState('');
+  const inputRef = useRef<HTMLInputElement>(null);
+  const salvandoRef = useRef(false);
 
-function LeadsNaoIniciadosContent() {
-  const [leads, setLeads] = useState<LeadNaoIniciado[]>([]);
-  const [leadsFiltrados, setLeadsFiltrados] = useState<LeadNaoIniciado[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
-  const [isUploading, setIsUploading] = useState(false);
-  const [isClearing, setIsClearing] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [successMessage, setSuccessMessage] = useState<string | null>(null);
-  const [removidosUltimaVerificacao, setRemovidosUltimaVerificacao] = useState(0);
-  
-  // Filtros
-  const [regiaoFiltro, setRegiaoFiltro] = useState('');
-  const [busca, setBusca] = useState('');
-  const [dataInicio, setDataInicio] = useState('');
-  const [dataFim, setDataFim] = useState('');
-  
-  // Estatísticas
-  const [stats, setStats] = useState({
-    porRegiao: {} as Record<string, number>,
-    regioes: [] as string[],
-  });
-
-  // Referência para o input de arquivo
-  const fileInputRef = useRef<HTMLInputElement>(null);
-
-  const { fetchApi } = useApi();
-  
-  // Ref para controlar se já carregou inicialmente
-  const hasLoaded = useRef(false);
-  const intervalRef = useRef<NodeJS.Timeout | null>(null);
-
-  // Carregar leads do banco (sem useCallback para evitar loops)
-  const carregarLeads = async (showLoading = true, verificarTutts = false) => {
-    if (showLoading) setIsLoading(true);
-    setError(null);
-
-    const url = verificarTutts 
-      ? '/api/leads-nao-iniciados?verificar_tutts=true'
-      : '/api/leads-nao-iniciados';
-
-    const { data: response, error: apiError } = await fetchApi<ApiResponse>(url);
-
-    if (apiError) {
-      setError(apiError);
-    } else if (response?.success) {
-      setLeads(response.data.leads);
-      setStats({
-        porRegiao: response.data.porRegiao,
-        regioes: response.data.regioes,
-      });
-
-      // Notificar se leads foram removidos automaticamente
-      const mensagens = [];
-      if (response.data.removidos > 0) {
-        mensagens.push(`${response.data.removidos} entraram no CRM`);
-      }
-      if (response.data.removidosTutts > 0) {
-        mensagens.push(`${response.data.removidosTutts} ativos na Tutts`);
-      }
-      
-      if (mensagens.length > 0) {
-        setRemovidosUltimaVerificacao(response.data.removidos + response.data.removidosTutts);
-        setSuccessMessage(`✅ Removidos: ${mensagens.join(' | ')}`);
-        setTimeout(() => setSuccessMessage(null), 5000);
-      }
-    }
-
-    setIsLoading(false);
-  };
-
-  // Carregar ao montar (apenas uma vez) e configurar intervalo
   useEffect(() => {
-    if (hasLoaded.current) return;
-    hasLoaded.current = true;
-    
-    // Carga inicial RÁPIDA (só CRM, sem Tutts)
-    carregarLeads(true, false);
-    
-    // Configurar verificação automática a cada 2 minutos (CRM + lote de 10 Tutts)
-    intervalRef.current = setInterval(() => {
-      console.log('[LeadsNaoIniciados] Verificação automática (CRM + lote Tutts)...');
-      carregarLeads(false, true);
-    }, 120000);
-    
-    return () => {
-      if (intervalRef.current) {
-        clearInterval(intervalRef.current);
-      }
-    };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  // Aplicar filtros localmente
-  useEffect(() => {
-    let filtrados = [...leads];
-
-    if (regiaoFiltro) {
-      filtrados = filtrados.filter(l => l.regiao === regiaoFiltro);
+    if (editando && inputRef.current) {
+      inputRef.current.focus();
     }
+  }, [editando]);
 
-    if (busca) {
-      const termoBusca = busca.toLowerCase();
-      filtrados = filtrados.filter(l =>
-        l.nome?.toLowerCase().includes(termoBusca) ||
-        l.codigo?.toLowerCase().includes(termoBusca) ||
-        l.telefone?.includes(termoBusca)
-      );
-    }
-
-    // Filtro por data de cadastro
-    if (dataInicio || dataFim) {
-      filtrados = filtrados.filter(l => {
-        if (!l.data_cadastro) return false;
-        let dataISO = '';
-        // Formato DD/MM/YYYY → YYYY-MM-DD
-        if (l.data_cadastro.includes('/')) {
-          const partes = l.data_cadastro.split('/');
-          if (partes.length !== 3) return false;
-          dataISO = `${partes[2]}-${partes[1]}-${partes[0]}`;
-        } 
-        // Já está em YYYY-MM-DD
-        else if (/^\d{4}-\d{2}-\d{2}/.test(l.data_cadastro)) {
-          dataISO = l.data_cadastro.substring(0, 10);
-        } else {
-          return false;
-        }
-        if (dataInicio && dataISO < dataInicio) return false;
-        if (dataFim && dataISO > dataFim) return false;
-        return true;
-      });
-    }
-
-    setLeadsFiltrados(filtrados);
-  }, [leads, regiaoFiltro, busca, dataInicio, dataFim]);
-
-  // Processar arquivo Excel
-  const processarArquivo = async (file: File) => {
-    setIsUploading(true);
-    setError(null);
-    setSuccessMessage(null);
-
-    try {
-      const data = await file.arrayBuffer();
-      const workbook = XLSX.read(data);
-      const sheetName = workbook.SheetNames[0];
-      const sheet = workbook.Sheets[sheetName];
-      const jsonData = XLSX.utils.sheet_to_json(sheet, { header: 1 }) as any[][];
-
-      // Encontrar índices das colunas
-      const headers = jsonData[0] as string[];
-      const headerLower = headers.map(h => (h || '').toString().toLowerCase().trim());
-      
-      let codigoIdx = headerLower.findIndex(h => h.includes('cod') || h.includes('código') || h.includes('codigo'));
-      let nomeIdx = headerLower.findIndex(h => h.includes('nome') || h.includes('name'));
-      let telefoneIdx = headerLower.findIndex(h => h.includes('tel') || h.includes('phone') || h.includes('celular') || h.includes('whatsapp'));
-      let dataAtivacaoIdx = headerLower.findIndex(h => h.includes('data') && h.includes('ativa'));
-      let dataCadastroIdx = headerLower.findIndex(h => h.includes('cadastro'));
-
-      // Se não encontrou, tenta posição padrão
-      if (codigoIdx === -1) codigoIdx = 0;
-      if (nomeIdx === -1) nomeIdx = 1;
-      if (telefoneIdx === -1) telefoneIdx = 2;
-      // Coluna F = índice 5 (padrão para Data Ativação)
-      if (dataAtivacaoIdx === -1) dataAtivacaoIdx = 5;
-      // Data cadastro: se não encontrou, usa data ativação como fallback
-      if (dataCadastroIdx === -1) dataCadastroIdx = dataAtivacaoIdx;
-
-      console.log('[Upload] Colunas encontradas:', { codigoIdx, nomeIdx, telefoneIdx, dataAtivacaoIdx, dataCadastroIdx });
-
-      // Extrair leads das linhas (pula header)
-      const leadsExtraidos = [];
-      for (let i = 1; i < jsonData.length; i++) {
-        const row = jsonData[i];
-        if (!row || row.length === 0) continue;
-
-        const telefone = row[telefoneIdx]?.toString().trim();
-        if (!telefone) continue;
-
-        // Extrair data de ativação (pode vir como número de série do Excel ou string)
-        let dataAtivacao = '';
-        const dataRaw = row[dataAtivacaoIdx];
-        if (dataRaw) {
-          if (typeof dataRaw === 'number') {
-            // Número de série do Excel - converter para data
-            const excelDate = new Date((dataRaw - 25569) * 86400 * 1000);
-            const dia = String(excelDate.getDate()).padStart(2, '0');
-            const mes = String(excelDate.getMonth() + 1).padStart(2, '0');
-            const ano = excelDate.getFullYear();
-            dataAtivacao = `${dia}/${mes}/${ano}`;
-          } else {
-            const raw = dataRaw.toString().trim();
-            if (/^\d{4}-\d{2}-\d{2}/.test(raw)) {
-              const [ano, mes, dia] = raw.substring(0, 10).split('-');
-              dataAtivacao = `${dia}/${mes}/${ano}`;
-            } else {
-              dataAtivacao = raw;
-            }
-          }
-        }
-
-        // Extrair data de cadastro
-        let dataCadastro = '';
-        const dataCadRaw = row[dataCadastroIdx];
-        if (dataCadRaw) {
-          if (typeof dataCadRaw === 'number') {
-            const excelDate = new Date((dataCadRaw - 25569) * 86400 * 1000);
-            const dia = String(excelDate.getDate()).padStart(2, '0');
-            const mes = String(excelDate.getMonth() + 1).padStart(2, '0');
-            const ano = excelDate.getFullYear();
-            dataCadastro = `${dia}/${mes}/${ano}`;
-          } else {
-            const raw = dataCadRaw.toString().trim();
-            // Se vier no formato ISO (YYYY-MM-DD), converter para DD/MM/YYYY
-            if (/^\d{4}-\d{2}-\d{2}/.test(raw)) {
-              const [ano, mes, dia] = raw.substring(0, 10).split('-');
-              dataCadastro = `${dia}/${mes}/${ano}`;
-            } else {
-              dataCadastro = raw;
-            }
-          }
-        }
-
-        leadsExtraidos.push({
-          codigo: row[codigoIdx]?.toString().trim() || '',
-          nome: row[nomeIdx]?.toString().trim() || '',
-          telefone,
-          data_ativacao: dataAtivacao,
-          data_cadastro: dataCadastro || dataAtivacao,
-        });
-      }
-
-      console.log(`[Upload] ${leadsExtraidos.length} leads extraídos do Excel`);
-
-      if (leadsExtraidos.length === 0) {
-        throw new Error('Nenhum lead encontrado no arquivo. Verifique se há dados na planilha.');
-      }
-
-      // Enviar para API
-      const { data: response, error: apiError } = await fetchApi<UploadResponse>(
-        '/api/leads-nao-iniciados',
-        {
-          method: 'POST',
-          body: JSON.stringify({ leads: leadsExtraidos }),
-        }
-      );
-
-      if (apiError) throw new Error(apiError);
-
-      if (response?.success) {
-        const msg = [];
-        if (response.data.novosInseridos > 0) {
-          msg.push(`${response.data.novosInseridos} novos na lista`);
-        }
-        if (response.data.enriquecidos > 0) {
-          msg.push(`${response.data.enriquecidos} leads enriquecidos no CRM`);
-        }
-        if (response.data.jaNoCRM > 0 && response.data.enriquecidos === 0) {
-          msg.push(`${response.data.jaNoCRM} já no CRM`);
-        }
-        if (response.data.duplicados > 0) {
-          msg.push(`${response.data.duplicados} duplicados ignorados`);
-        }
-        
-        setSuccessMessage(`✅ ${msg.join(' | ')}`);
-
-        // Recarregar lista
-        await carregarLeads(false);
-      }
-
-    } catch (err: any) {
-      console.error('[Upload] Erro:', err);
-      setError(err.message || 'Erro ao processar arquivo');
-    }
-
-    setIsUploading(false);
-  };
-
-  // Handler do input de arquivo
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      processarArquivo(file);
-    }
-    // Limpar input para permitir reenvio do mesmo arquivo
-    if (fileInputRef.current) {
-      fileInputRef.current.value = '';
-    }
-  };
-
-  // Limpar lista
-  const limparLista = async () => {
-    if (!confirm('Tem certeza que deseja limpar toda a lista de leads não iniciados?')) {
+  const handleSelect = (valor: string) => {
+    if (valor === '__outro__') {
+      setEditando(true);
       return;
     }
-
-    setIsClearing(true);
-    setError(null);
-
-    const { data: response, error: apiError } = await fetchApi<{ success: boolean }>(
-      '/api/leads-nao-iniciados?limpar_todos=true',
-      { method: 'DELETE' }
-    );
-
-    if (apiError) {
-      setError(apiError);
-    } else if (response?.success) {
-      setLeads([]);
-      setLeadsFiltrados([]);
-      setStats({ porRegiao: {}, regioes: [] });
-      setSuccessMessage('Lista limpa com sucesso!');
-      setTimeout(() => setSuccessMessage(null), 3000);
+    if (valor) {
+      onSave(lead.id, valor);
     }
-
-    setIsClearing(false);
   };
 
-  // Exportar para CSV
-  const exportarCSV = () => {
-    const headers = ['Código', 'Nome', 'Telefone', 'Região', 'WhatsApp'];
-    const rows = leadsFiltrados.map(l => [
-      l.codigo,
-      l.nome,
-      l.telefone,
-      l.regiao,
-      l.whatsappLink,
-    ]);
-
-    const csv = [headers, ...rows].map(row => row.join(',')).join('\n');
-    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `leads-nao-iniciados-${format(new Date(), 'yyyy-MM-dd')}.csv`;
-    link.click();
+  const handleCustomSave = () => {
+    if (salvandoRef.current) return;
+    salvandoRef.current = true;
+    const nome = customNome.trim().toUpperCase();
+    if (nome) {
+      onSave(lead.id, nome);
+    }
+    setEditando(false);
+    setCustomNome('');
+    setTimeout(() => { salvandoRef.current = false; }, 200);
   };
 
-  // Formatar telefone para exibição
-  const formatarTelefone = (telefone: string): string => {
-    const numeros = telefone.replace(/\D/g, '');
-    if (numeros.length === 11) {
-      return `(${numeros.slice(0, 2)}) ${numeros.slice(2, 7)}-${numeros.slice(7)}`;
-    }
-    if (numeros.length === 10) {
-      return `(${numeros.slice(0, 2)}) ${numeros.slice(2, 6)}-${numeros.slice(6)}`;
-    }
-    return telefone;
-  };
-
-  if (isLoading) {
+  if (editando) {
     return (
-      <div className="h-full flex items-center justify-center">
-        <Loader2 className="w-8 h-8 animate-spin text-blue-600" />
+      <input
+        ref={inputRef}
+        type="text"
+        value={customNome}
+        onChange={(e) => setCustomNome(e.target.value.toUpperCase())}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') { e.preventDefault(); handleCustomSave(); }
+          if (e.key === 'Escape') { setEditando(false); setCustomNome(''); }
+        }}
+        onBlur={handleCustomSave}
+        placeholder="Digite o nome + Enter"
+        className="w-32 px-2 py-1 text-xs border border-purple-300 rounded focus:outline-none focus:ring-1 focus:ring-purple-500"
+      />
+    );
+  }
+
+  return (
+    <select
+      value={lead.quem_ativou || ''}
+      onChange={(e) => handleSelect(e.target.value)}
+      className={clsx(
+        'w-32 px-2 py-1 text-xs border rounded cursor-pointer focus:outline-none focus:ring-1 focus:ring-purple-500',
+        lead.quem_ativou ? 'border-green-300 bg-green-50 text-green-800' : 'border-gray-300 text-gray-400'
+      )}
+    >
+      <option value="">— selecionar —</option>
+      {ativadores.map(nome => (
+        <option key={nome} value={nome}>{nome}</option>
+      ))}
+      <option value="__outro__">+ Outro...</option>
+    </select>
+  );
+}
+
+// ── Inline editable cell: Observação ───────────────────────
+function ObservacaoCell({ lead, onSave }: {
+  lead: LeadCapturado;
+  onSave: (id: number, valor: string) => void;
+}) {
+  const [texto, setTexto] = useState(lead.observacao || '');
+  const [isEditing, setIsEditing] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const saveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  useEffect(() => { if (!isEditing) setTexto(lead.observacao || ''); }, [lead.observacao, isEditing]);
+  useEffect(() => { return () => { if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current); }; }, []);
+
+  const handleSave = () => {
+    if (texto === (lead.observacao || '')) { setIsEditing(false); return; }
+    setIsSaving(true);
+    onSave(lead.id, texto);
+    setSaved(true);
+    setTimeout(() => { setSaved(false); setIsSaving(false); setIsEditing(false); }, 1000);
+  };
+
+  const handleChange = (value: string) => {
+    setTexto(value);
+    if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
+    saveTimeoutRef.current = setTimeout(() => {
+      if (value !== (lead.observacao || '')) {
+        setIsSaving(true);
+        onSave(lead.id, value);
+        setSaved(true);
+        setTimeout(() => { setSaved(false); setIsSaving(false); }, 1000);
+      }
+    }, 1500);
+  };
+
+  const handleStartEdit = () => {
+    setIsEditing(true);
+    setTimeout(() => textareaRef.current?.focus(), 50);
+  };
+
+  if (isEditing) {
+    return (
+      <div className="min-w-[240px]">
+        <textarea
+          ref={textareaRef}
+          value={texto}
+          onChange={(e) => handleChange(e.target.value)}
+          onBlur={handleSave}
+          onKeyDown={(e) => { if (e.key === 'Escape') { setTexto(lead.observacao || ''); setIsEditing(false); } }}
+          rows={3}
+          className="w-full px-2 py-1.5 text-xs border-2 border-purple-400 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-purple-500 resize-y bg-white"
+          placeholder="Digite observações..."
+        />
+        <div className="flex items-center justify-between mt-1">
+          <span className="text-[10px] text-gray-400">
+            {isSaving ? (
+              <span className="flex items-center gap-1 text-blue-500"><Loader2 className="w-3 h-3 animate-spin" /> Salvando...</span>
+            ) : saved ? (
+              <span className="flex items-center gap-1 text-green-500"><CheckCircle className="w-3 h-3" /> Salvo!</span>
+            ) : 'Esc cancelar'}
+          </span>
+        </div>
       </div>
     );
   }
 
   return (
-    <div className="p-4 lg:p-6 min-h-screen bg-gray-50">
+    <div onClick={handleStartEdit} className="min-w-[180px] cursor-pointer group">
+      {texto ? (
+        <p className="text-xs text-gray-700 whitespace-pre-wrap leading-relaxed line-clamp-2 group-hover:text-purple-600 transition-colors">{texto}</p>
+      ) : (
+        <span className="text-xs text-gray-300 group-hover:text-purple-400 transition-colors italic">Clique para adicionar...</span>
+      )}
+    </div>
+  );
+}
+
+// ── Main Component ─────────────────────────────────────────
+function LeadsNaoIniciadosContent() {
+  const [leads, setLeads] = useState<LeadCapturado[]>([]);
+  const [stats, setStats] = useState<Stats | null>(null);
+  const [ativadores, setAtivadores] = useState<string[]>([]);
+
+  const [isLoading, setIsLoading] = useState(true);
+  const [isCapturing, setIsCapturing] = useState(false);
+  const [isVerifying, setIsVerifying] = useState(false);
+  const [isEnriching, setIsEnriching] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [successMsg, setSuccessMsg] = useState<string | null>(null);
+
+  const [regiaoFiltro, setRegiaoFiltro] = useState('');
+  const [statusFiltro, setStatusFiltro] = useState('');
+  const [busca, setBusca] = useState('');
+  const [dataInicio, setDataInicio] = useState('');
+  const [dataFim, setDataFim] = useState('');
+  const [ativacaoInicio, setAtivacaoInicio] = useState('');
+  const [ativacaoFim, setAtivacaoFim] = useState('');
+  const [page, setPage] = useState(1);
+  const [totalPages, setTotalPages] = useState(1);
+  const [total, setTotal] = useState(0);
+  const [regioes, setRegioes] = useState<string[]>([]);
+
+  const { fetchApi } = useApi();
+  const hasLoaded = useRef(false);
+  const pollRef = useRef<NodeJS.Timeout | null>(null);
+  const verifyPollRef = useRef<NodeJS.Timeout | null>(null);
+
+  // ── Loaders ─────────────────────────────────────────────
+  const carregarLeads = useCallback(async (showLoading = true) => {
+    if (showLoading) setIsLoading(true);
+    const params = new URLSearchParams();
+    if (regiaoFiltro) params.set('regiao', regiaoFiltro);
+    if (statusFiltro) params.set('status_api', statusFiltro);
+    if (busca) params.set('search', busca);
+    if (dataInicio) params.set('data_inicio', dataInicio);
+    if (dataFim) params.set('data_fim', dataFim);
+    if (ativacaoInicio) params.set('ativacao_inicio', ativacaoInicio);
+    if (ativacaoFim) params.set('ativacao_fim', ativacaoFim);
+    params.set('page', String(page));
+    params.set('limit', '50');
+
+    const { data, error: apiError } = await fetchApi(`/api/leads-captura?${params}`);
+    if (apiError) { setError(apiError); }
+    else if (data?.success) {
+      setLeads(data.data);
+      setTotal(data.total);
+      setTotalPages(data.totalPages);
+      setRegioes(data.regioes || []);
+      // Só atualizar isCapturing se não tem polling ativo (evita conflito)
+      if (!pollRef.current) {
+        setIsCapturing(data.captura_em_andamento || false);
+      }
+      // KPIs vêm embutidos na mesma resposta
+      if (data.stats) setStats(data.stats);
+    }
+    setIsLoading(false);
+  }, [fetchApi, regiaoFiltro, statusFiltro, busca, dataInicio, dataFim, ativacaoInicio, ativacaoFim, page]);
+
+  // Stats vêm embutidos em carregarLeads — este é fallback
+  const carregarStats = useCallback(async () => {
+    // Stats já vêm no GET / — só chama se precisar forçar
+    const params = new URLSearchParams();
+    if (dataInicio) params.set('data_inicio', dataInicio);
+    if (dataFim) params.set('data_fim', dataFim);
+    params.set('page', '1');
+    params.set('limit', '1');
+    const qs = params.toString();
+    const { data } = await fetchApi(`/api/leads-captura?${qs}`);
+    if (data?.success && data.stats) setStats(data.stats);
+  }, [fetchApi, dataInicio, dataFim]);
+
+  const carregarAtivadores = useCallback(async () => {
+    const { data } = await fetchApi('/api/leads-captura/ativadores');
+    if (data?.success) setAtivadores(data.data);
+  }, [fetchApi]);
+
+  // Ref para recarregar (evita stale closure no polling)
+  const recarregarRef = useRef(() => {});
+  recarregarRef.current = () => { carregarLeads(false); carregarStats(); };
+
+  // ── Actions ─────────────────────────────────────────────
+  const dispararCaptura = async () => {
+    setIsCapturing(true);
+    setError(null);
+    const { data, error: apiError } = await fetchApi('/api/leads-captura', {
+      method: 'POST', body: JSON.stringify({}),
+    });
+    if (apiError) { setError(apiError); setIsCapturing(false); return; }
+    if (data?.success) {
+      setSuccessMsg(`Captura iniciada (Job #${data.job_id}). Aguarde...`);
+      setTimeout(() => setSuccessMsg(null), 15000);
+      if (pollRef.current) clearInterval(pollRef.current);
+      pollRef.current = setInterval(async () => {
+        try {
+          const { data: jd } = await fetchApi('/api/leads-captura/jobs');
+          if (jd?.success && !jd.em_andamento) {
+            if (pollRef.current) clearInterval(pollRef.current);
+            pollRef.current = null;
+            setIsCapturing(false);
+            setSuccessMsg('✅ Captura concluída! Dados atualizados.');
+            setTimeout(() => setSuccessMsg(null), 5000);
+            // Usar ref para garantir versão atual da função
+            recarregarRef.current();
+          }
+        } catch (e) {
+          console.error('[Polling] erro:', e);
+        }
+      }, 4000);
+    }
+  };
+
+  const reVerificar = async () => {
+    setIsVerifying(true);
+    setError(null);
+    const { data, error: apiError } = await fetchApi('/api/leads-captura/re-verificar', {
+      method: 'POST', body: JSON.stringify({}),
+    });
+    if (apiError) { setError(apiError); setIsVerifying(false); return; }
+    if (data?.success) {
+      setSuccessMsg(data.message);
+      // Polling para acompanhar progresso
+      if (verifyPollRef.current) clearInterval(verifyPollRef.current);
+      verifyPollRef.current = setInterval(async () => {
+        try {
+          const res = await fetchApi('/api/leads-captura/re-verificar');
+          if (res.data?.success && !res.data.em_andamento) {
+            if (verifyPollRef.current) clearInterval(verifyPollRef.current);
+            verifyPollRef.current = null;
+            setIsVerifying(false);
+            setSuccessMsg(`✅ ${res.data.message || 'Verificação concluída!'}`);
+            setTimeout(() => setSuccessMsg(null), 8000);
+            recarregarRef.current();
+          } else if (res.data?.verificados) {
+            setSuccessMsg(`Verificando... ${res.data.verificados} processados`);
+          }
+        } catch {}
+      }, 3000);
+    }
+  };
+
+  const enriquecer = async () => {
+    setIsEnriching(true);
+    setError(null);
+    const { data, error: apiError } = await fetchApi('/api/leads-captura/enriquecer', {
+      method: 'POST', body: JSON.stringify({}),
+    });
+    if (apiError) { setError(apiError); }
+    else if (data?.success) {
+      setSuccessMsg(data.message || `${data.atualizados} leads enriquecidos`);
+      setTimeout(() => setSuccessMsg(null), 5000);
+      await carregarLeads(false);
+    }
+    setIsEnriching(false);
+  };
+
+  const salvarQuemAtivou = async (id: number, valor: string) => {
+    await fetchApi(`/api/leads-captura/${id}`, {
+      method: 'PATCH', body: JSON.stringify({ quem_ativou: valor }),
+    });
+    setLeads(prev => prev.map(l => l.id === id ? { ...l, quem_ativou: valor.toUpperCase() } : l));
+    carregarAtivadores(); // refresh dropdown
+  };
+
+  const salvarObservacao = async (id: number, valor: string) => {
+    await fetchApi(`/api/leads-captura/${id}`, {
+      method: 'PATCH', body: JSON.stringify({ observacao: valor }),
+    });
+    setLeads(prev => prev.map(l => l.id === id ? { ...l, observacao: valor } : l));
+  };
+
+  const recarregarTudo = () => { carregarLeads(); carregarStats(); carregarAtivadores(); };
+
+  // ── Init ────────────────────────────────────────────────
+  useEffect(() => {
+    if (hasLoaded.current) return;
+    hasLoaded.current = true;
+    recarregarTudo();
+
+    // Detectar se já tem captura em andamento e iniciar polling
+    (async () => {
+      try {
+        const { data: jd } = await fetchApi('/api/leads-captura/jobs');
+        if (jd?.success && jd.em_andamento) {
+          setIsCapturing(true);
+          setSuccessMsg('Captura em andamento... aguarde.');
+          if (pollRef.current) clearInterval(pollRef.current);
+          pollRef.current = setInterval(async () => {
+            try {
+              const { data: jd2 } = await fetchApi('/api/leads-captura/jobs');
+              if (jd2?.success && !jd2.em_andamento) {
+                if (pollRef.current) clearInterval(pollRef.current);
+                pollRef.current = null;
+                setIsCapturing(false);
+                setSuccessMsg('✅ Captura concluída! Dados atualizados.');
+                setTimeout(() => setSuccessMsg(null), 5000);
+                recarregarRef.current();
+              }
+            } catch {}
+          }, 4000);
+        }
+      } catch {}
+    })();
+
+    return () => { if (pollRef.current) clearInterval(pollRef.current); if (verifyPollRef.current) clearInterval(verifyPollRef.current); };
+  }, []);
+
+  useEffect(() => {
+    if (!hasLoaded.current) return;
+    carregarLeads();
+    carregarStats();
+  }, [regiaoFiltro, statusFiltro, busca, dataInicio, dataFim, ativacaoInicio, ativacaoFim, page]);
+
+  // ── Helpers ─────────────────────────────────────────────
+  const statusBadge = (s: string | null) => {
+    if (s === 'ativo')          return <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-700"><CheckCircle className="w-3 h-3" /> Ativo</span>;
+    if (s === 'inativo')        return <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-700"><XCircle className="w-3 h-3" /> Inativo</span>;
+    if (s === 'nao_encontrado') return <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-yellow-100 text-yellow-700"><AlertCircle className="w-3 h-3" /> N/E</span>;
+    return <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-500"><Clock className="w-3 h-3" /> Pendente</span>;
+  };
+
+  const fmtData = (d: string | null) => {
+    if (!d) return '—';
+    try {
+      // Extrair apenas YYYY-MM-DD para evitar shift de timezone
+      const iso = d.substring(0, 10); // "2026-04-02"
+      const [ano, mes, dia] = iso.split('-');
+      return `${dia}/${mes}/${ano}`;
+    } catch { return d; }
+  };
+
+  const tempoAtras = (d: string | null) => {
+    if (!d) return '';
+    try { return formatDistanceToNow(new Date(d), { addSuffix: true, locale: ptBR }); } catch { return ''; }
+  };
+
+  const wppLink = (tel: string) => {
+    if (!tel) return '#';
+    const numeros = tel.replace(/\D/g, '');
+    const comDDI = numeros.startsWith('55') ? numeros : `55${numeros}`;
+    return `https://wa.me/${comDDI}`;
+  };
+
+  // ── Render ──────────────────────────────────────────────
+  return (
+    <div className="p-4 md:p-6 max-w-[1600px] mx-auto">
       {/* Header */}
-      <div className="mb-6 flex flex-col sm:flex-row sm:items-center gap-4">
-        <div className="flex-1">
-          <h1 className="text-2xl font-bold text-gray-900 flex items-center gap-2">
-            <Users className="w-7 h-7 text-orange-600" />
-            Leads Não Iniciados
+      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6">
+        <div>
+          <h1 className="text-2xl font-bold text-gray-800 flex items-center gap-2">
+            <Bot className="w-7 h-7 text-purple-600" />
+            Cadastros
           </h1>
-          <p className="text-gray-600">Leads que ainda não estão no CRM</p>
+          <p className="text-sm text-gray-500 mt-1">Captura automática 7h e 20h — {total} cadastros no banco</p>
         </div>
-
-        <div className="flex items-center gap-2">
-          {leads.length > 0 && (
-            <>
-              <button
-                onClick={exportarCSV}
-                className="btn-secondary flex items-center gap-2"
-              >
-                <Download className="w-4 h-4" />
-                Exportar
-              </button>
-              <button
-                onClick={limparLista}
-                disabled={isClearing}
-                className="btn-secondary flex items-center gap-2 text-red-600 hover:bg-red-50"
-              >
-                {isClearing ? (
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                ) : (
-                  <Trash2 className="w-4 h-4" />
-                )}
-                Limpar
-              </button>
-            </>
-          )}
+        <div className="flex items-center gap-2 flex-wrap">
+          <button onClick={recarregarTudo} disabled={isLoading}
+            className="flex items-center gap-2 px-3 py-2 text-sm rounded-lg border border-gray-300 hover:bg-gray-50 disabled:opacity-50">
+            <RefreshCw className={clsx('w-4 h-4', isLoading && 'animate-spin')} /> Atualizar
+          </button>
+          <button onClick={reVerificar} disabled={isVerifying}
+            className={clsx('flex items-center gap-2 px-3 py-2 text-sm font-medium rounded-lg border transition-colors',
+              isVerifying ? 'border-orange-300 text-orange-400 cursor-not-allowed' : 'border-orange-300 text-orange-600 hover:bg-orange-50')}>
+            {isVerifying ? <><Loader2 className="w-4 h-4 animate-spin" /> Verificando...</> : <><CheckCircle className="w-4 h-4" /> Verificar Status</>}
+          </button>
+          <button onClick={enriquecer} disabled={isEnriching}
+            className={clsx('flex items-center gap-2 px-3 py-2 text-sm font-medium rounded-lg border transition-colors',
+              isEnriching ? 'border-blue-300 text-blue-400 cursor-not-allowed' : 'border-blue-300 text-blue-600 hover:bg-blue-50')}>
+            {isEnriching ? <><Loader2 className="w-4 h-4 animate-spin" /> Enriquecendo...</> : <><Zap className="w-4 h-4" /> Enriquecer</>}
+          </button>
+          <button onClick={dispararCaptura} disabled={isCapturing}
+            className={clsx('flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-lg text-white transition-colors',
+              isCapturing ? 'bg-purple-400 cursor-not-allowed' : 'bg-purple-600 hover:bg-purple-700')}>
+            {isCapturing ? <><Loader2 className="w-4 h-4 animate-spin" /> Capturando...</> : <><Play className="w-4 h-4" /> Capturar Agora</>}
+          </button>
         </div>
       </div>
 
-      {/* Erro */}
-      {error && (
-        <div className="card mb-4 p-4 bg-red-50 border-red-200">
-          <div className="flex items-center gap-2 text-red-600">
-            <AlertCircle className="w-5 h-5" />
-            <span>{error}</span>
+      {/* Alertas */}
+      {error && <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm flex items-center gap-2"><AlertCircle className="w-4 h-4 flex-shrink-0" /> {error}</div>}
+      {successMsg && <div className="mb-4 p-3 bg-green-50 border border-green-200 rounded-lg text-green-700 text-sm flex items-center gap-2"><CheckCircle className="w-4 h-4 flex-shrink-0" /> {successMsg}</div>}
+
+      {/* KPIs */}
+      {stats && (
+        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 mb-6">
+          <div className="card p-4"><div className="flex items-center gap-3"><div className="w-10 h-10 bg-purple-100 rounded-xl flex items-center justify-center"><Users className="w-5 h-5 text-purple-600" /></div><div><p className="text-2xl font-bold text-purple-600">{stats.total}</p><p className="text-xs text-gray-500">Total</p></div></div></div>
+          <div className="card p-4"><div className="flex items-center gap-3"><div className="w-10 h-10 bg-green-100 rounded-xl flex items-center justify-center"><CheckCircle className="w-5 h-5 text-green-600" /></div><div><p className="text-2xl font-bold text-green-600">{stats.ativos}</p><p className="text-xs text-gray-500">Ativos</p></div></div></div>
+          <div className="card p-4"><div className="flex items-center gap-3"><div className="w-10 h-10 bg-red-100 rounded-xl flex items-center justify-center"><XCircle className="w-5 h-5 text-red-600" /></div><div><p className="text-2xl font-bold text-red-600">{stats.inativos}</p><p className="text-xs text-gray-500">Inativos</p></div></div></div>
+          <div className="card p-4"><div className="flex items-center gap-3"><div className="w-10 h-10 bg-yellow-100 rounded-xl flex items-center justify-center"><AlertCircle className="w-5 h-5 text-yellow-600" /></div><div><p className="text-2xl font-bold text-yellow-600">{stats.nao_encontrados}</p><p className="text-xs text-gray-500">N/Encontrado</p></div></div></div>
+          <div className="card p-4"><div className="flex items-center gap-3"><div className="w-10 h-10 bg-gray-100 rounded-xl flex items-center justify-center"><Clock className="w-5 h-5 text-gray-500" /></div><div><p className="text-2xl font-bold text-gray-500">{stats.sem_verificacao}</p><p className="text-xs text-gray-500">Pendentes</p></div></div></div>
+          <div className="card p-4"><div className="flex items-center gap-3"><div className="w-10 h-10 bg-blue-100 rounded-xl flex items-center justify-center"><MapPin className="w-5 h-5 text-blue-600" /></div><div><p className="text-2xl font-bold text-blue-600">{stats.total_regioes}</p><p className="text-xs text-gray-500">Regiões</p></div></div></div>
+        </div>
+      )}
+
+      {/* Último Job */}
+      {stats?.ultimoJob && (
+        <div className="mb-6 p-4 card bg-gray-50 border border-gray-200">
+          <div className="flex items-center justify-between flex-wrap gap-2">
+            <div className="flex items-center gap-3">
+              <Zap className="w-5 h-5 text-purple-600" />
+              <span className="text-sm font-medium text-gray-700">Última captura:</span>
+              <span className={clsx('px-2 py-0.5 rounded-full text-xs font-medium',
+                stats.ultimoJob.status === 'concluido' ? 'bg-green-100 text-green-700' :
+                stats.ultimoJob.status === 'executando' ? 'bg-blue-100 text-blue-700 animate-pulse' :
+                'bg-red-100 text-red-700'
+              )}>{stats.ultimoJob.status}</span>
+              <span className="text-sm text-gray-500">{tempoAtras(stats.ultimoJob.concluido_em || stats.ultimoJob.iniciado_em)}</span>
+            </div>
+            <div className="flex items-center gap-4 text-xs text-gray-500">
+              <span>{stats.ultimoJob.total_capturados} capturados</span>
+              <span className="text-green-600 font-medium">{stats.ultimoJob.total_novos} novos</span>
+              <span>{stats.ultimoJob.total_ativos} ativos</span>
+              <span>{stats.ultimoJob.total_inativos} inativos</span>
+            </div>
           </div>
         </div>
       )}
 
-      {/* Sucesso */}
-      {successMessage && (
-        <div className="card mb-4 p-4 bg-green-50 border-green-200">
-          <div className="flex items-center gap-2 text-green-600">
-            <CheckCircle className="w-5 h-5" />
-            <span>{successMessage}</span>
-          </div>
+      {/* Filtros */}
+      <div className="flex flex-wrap gap-3 mb-3">
+        <div className="relative flex-1 min-w-[200px]">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+          <input type="text" placeholder="Buscar nome, código ou celular..."
+            value={busca} onChange={(e) => { setBusca(e.target.value); setPage(1); }}
+            className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-purple-500" />
         </div>
-      )}
-
-      {/* Upload de Arquivo */}
-      <div className="card p-6 mb-6">
-        <div className="flex items-center gap-2 mb-4">
-          <FileSpreadsheet className="w-5 h-5 text-green-600" />
-          <span className="font-medium text-gray-700">Upload de Planilha</span>
-        </div>
-
-        <div className="border-2 border-dashed border-gray-300 rounded-xl p-8 text-center hover:border-blue-400 transition-colors">
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept=".xlsx,.xls,.csv"
-            onChange={handleFileChange}
-            className="hidden"
-            id="file-upload"
-          />
-          <label
-            htmlFor="file-upload"
-            className="cursor-pointer"
-          >
-            {isUploading ? (
-              <div className="flex flex-col items-center">
-                <Loader2 className="w-12 h-12 text-blue-500 animate-spin mb-4" />
-                <p className="text-gray-600">Processando arquivo...</p>
-              </div>
-            ) : (
-              <div className="flex flex-col items-center">
-                <Upload className="w-12 h-12 text-gray-400 mb-4" />
-                <p className="text-gray-600 mb-2">
-                  Clique para selecionar ou arraste o arquivo Excel
-                </p>
-                <p className="text-sm text-gray-400">
-                  Formatos aceitos: .xlsx, .xls, .csv
-                </p>
-                <p className="text-sm text-gray-400 mt-2">
-                  Colunas esperadas: <strong>Código</strong>, <strong>Nome</strong>, <strong>Telefone</strong>
-                </p>
-              </div>
-            )}
-          </label>
-        </div>
+        <select value={regiaoFiltro} onChange={(e) => { setRegiaoFiltro(e.target.value); setPage(1); }}
+          className="px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-purple-500">
+          <option value="">Todas as regiões</option>
+          {regioes.map(r => <option key={r} value={r}>{r}</option>)}
+        </select>
+        <select value={statusFiltro} onChange={(e) => { setStatusFiltro(e.target.value); setPage(1); }}
+          className="px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-purple-500">
+          <option value="">Todos os status</option>
+          <option value="ativo">Ativo</option>
+          <option value="inativo">Inativo</option>
+          <option value="nao_encontrado">Não encontrado</option>
+        </select>
+      </div>
+      <div className="flex flex-wrap items-center gap-3 mb-2">
+        <Calendar className="w-4 h-4 text-gray-400" />
+        <span className="text-sm text-gray-500">Cadastro:</span>
+        <input type="date" value={dataInicio} onChange={(e) => { setDataInicio(e.target.value); setPage(1); }}
+          className="px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-purple-500" />
+        <span className="text-gray-400">até</span>
+        <input type="date" value={dataFim} onChange={(e) => { setDataFim(e.target.value); setPage(1); }}
+          className="px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-purple-500" />
+        {(dataInicio || dataFim) && (
+          <button onClick={() => { setDataInicio(''); setDataFim(''); setPage(1); }}
+            className="text-xs text-purple-600 hover:text-purple-800 underline">Limpar</button>
+        )}
+      </div>
+      <div className="flex flex-wrap items-center gap-3 mb-4">
+        <CheckCircle className="w-4 h-4 text-green-500" />
+        <span className="text-sm text-gray-500">Ativação:</span>
+        <input type="date" value={ativacaoInicio} onChange={(e) => { setAtivacaoInicio(e.target.value); setPage(1); }}
+          className="px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-green-500" />
+        <span className="text-gray-400">até</span>
+        <input type="date" value={ativacaoFim} onChange={(e) => { setAtivacaoFim(e.target.value); setPage(1); }}
+          className="px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-green-500" />
+        {(ativacaoInicio || ativacaoFim) && (
+          <button onClick={() => { setAtivacaoInicio(''); setAtivacaoFim(''); setPage(1); }}
+            className="text-xs text-green-600 hover:text-green-800 underline">Limpar</button>
+        )}
       </div>
 
-      {/* Estatísticas */}
-      {leads.length > 0 && (
+      {/* Tabela */}
+      {isLoading ? (
+        <div className="flex items-center justify-center py-20"><Loader2 className="w-8 h-8 animate-spin text-purple-500" /></div>
+      ) : leads.length === 0 ? (
+        <div className="text-center py-16 text-gray-400">
+          <Bot className="w-12 h-12 mx-auto mb-3 opacity-50" />
+          <p className="font-medium">Nenhum cadastro encontrado</p>
+          <p className="text-sm mt-1">Clique em &quot;Capturar Agora&quot; para buscar cadastros</p>
+        </div>
+      ) : (
         <>
-          <div className="grid grid-cols-2 lg:grid-cols-3 gap-4 mb-6">
-            <div className="card p-4">
-              <div className="flex items-center gap-3">
-                <div className="w-10 h-10 bg-orange-100 rounded-xl flex items-center justify-center">
-                  <Users className="w-5 h-5 text-orange-600" />
-                </div>
-                <div>
-                  <p className="text-2xl font-bold text-orange-600">{leads.length}</p>
-                  <p className="text-sm text-gray-500">Não Iniciados</p>
-                </div>
-              </div>
-            </div>
-
-            <div className="card p-4">
-              <div className="flex items-center gap-3">
-                <div className="w-10 h-10 bg-purple-100 rounded-xl flex items-center justify-center">
-                  <MapPin className="w-5 h-5 text-purple-600" />
-                </div>
-                <div>
-                  <p className="text-2xl font-bold text-purple-600">{stats.regioes.length}</p>
-                  <p className="text-sm text-gray-500">Regiões</p>
-                </div>
-              </div>
-            </div>
-
-            <div className="card p-4">
-              <div className="flex items-center gap-3">
-                <div className="w-10 h-10 bg-green-100 rounded-xl flex items-center justify-center">
-                  <CheckCircle className="w-5 h-5 text-green-600" />
-                </div>
-                <div>
-                  <p className="text-2xl font-bold text-green-600">{removidosUltimaVerificacao}</p>
-                  <p className="text-sm text-gray-500">Removidos (última verificação)</p>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          {/* Filtros */}
-          <div className="card p-4 mb-6">
-            <div className="flex flex-wrap items-center gap-4">
-              <div className="flex items-center gap-2">
-                <Filter className="w-4 h-4 text-gray-500" />
-                <span className="text-sm font-medium text-gray-700">Filtros:</span>
-              </div>
-
-              {/* Região */}
-              <select
-                value={regiaoFiltro}
-                onChange={(e) => setRegiaoFiltro(e.target.value)}
-                className="px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-              >
-                <option value="">Todas regiões</option>
-                {stats.regioes.map(r => (
-                  <option key={r} value={r}>{r} ({stats.porRegiao[r] || 0})</option>
-                ))}
-              </select>
-
-              {/* Busca */}
-              <div className="relative flex-1 max-w-xs">
-                <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-400" />
-                <input
-                  type="text"
-                  placeholder="Buscar..."
-                  value={busca}
-                  onChange={(e) => setBusca(e.target.value)}
-                  className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                />
-              </div>
-
-              {/* Filtro por Data de Cadastro */}
-              <div className="flex items-center gap-2">
-                <Calendar className="w-4 h-4 text-gray-400" />
-                <input
-                  type="date"
-                  value={dataInicio}
-                  onChange={(e) => setDataInicio(e.target.value)}
-                  className="px-2 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm"
-                  title="Data cadastro - De"
-                />
-                <span className="text-xs text-gray-400">até</span>
-                <input
-                  type="date"
-                  value={dataFim}
-                  onChange={(e) => setDataFim(e.target.value)}
-                  className="px-2 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm"
-                  title="Data cadastro - Até"
-                />
-                {(dataInicio || dataFim) && (
-                  <button
-                    onClick={() => { setDataInicio(''); setDataFim(''); }}
-                    className="text-xs text-red-500 hover:text-red-700"
-                    title="Limpar filtro de data"
-                  >
-                    ✕
-                  </button>
-                )}
-              </div>
-
-              <span className="text-xs text-gray-400">
-                Verifica CRM + 10 leads/Tutts a cada 2 min
-              </span>
-            </div>
-
-            {/* Mini cards por região */}
-            <div className="flex flex-wrap gap-2 mt-4">
-              {Object.entries(stats.porRegiao)
-                .sort((a, b) => b[1] - a[1])
-                .map(([regiao, qtd]) => (
-                  <span
-                    key={regiao}
-                    onClick={() => setRegiaoFiltro(regiaoFiltro === regiao ? '' : regiao)}
-                    className={clsx(
-                      'px-3 py-1 rounded-full text-sm cursor-pointer transition-colors',
-                      regiaoFiltro === regiao
-                        ? 'bg-purple-600 text-white'
-                        : 'bg-purple-50 text-purple-700 hover:bg-purple-100'
-                    )}
-                  >
-                    {regiao}: <strong>{qtd}</strong>
-                  </span>
-                ))}
-            </div>
-          </div>
-
-          {/* Tabela */}
           <div className="card overflow-hidden">
             <div className="overflow-x-auto">
-              <table className="w-full">
-                <thead className="bg-gray-50 border-b">
-                  <tr>
-                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      <div className="flex items-center gap-1">
-                        <Hash className="w-3 h-3" />
-                        Código
-                      </div>
-                    </th>
-                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      <div className="flex items-center gap-1">
-                        <User className="w-3 h-3" />
-                        Nome
-                      </div>
-                    </th>
-                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      <div className="flex items-center gap-1">
-                        <Phone className="w-3 h-3" />
-                        Telefone
-                      </div>
-                    </th>
-                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      <div className="flex items-center gap-1">
-                        <MapPin className="w-3 h-3" />
-                        Região
-                      </div>
-                    </th>
-                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      <div className="flex items-center gap-1">
-                        <Calendar className="w-3 h-3" />
-                        Data Cadastro
-                      </div>
-                    </th>
-                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      <div className="flex items-center gap-1">
-                        <MessageCircle className="w-3 h-3" />
-                        WhatsApp
-                      </div>
-                    </th>
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="bg-gray-50 border-b border-gray-200">
+                    <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase"><div className="flex items-center gap-1"><Hash className="w-3 h-3" /> Cód</div></th>
+                    <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase"><div className="flex items-center gap-1"><User className="w-3 h-3" /> Nome</div></th>
+                    <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase"><div className="flex items-center gap-1"><Phone className="w-3 h-3" /> Celular</div></th>
+                    <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase"><div className="flex items-center gap-1"><MapPin className="w-3 h-3" /> Região</div></th>
+                    <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase"><div className="flex items-center gap-1"><Calendar className="w-3 h-3" /> Cadastro</div></th>
+                    <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
+                    <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase"><div className="flex items-center gap-1"><Calendar className="w-3 h-3" /> Ativação</div></th>
+                    <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase"><div className="flex items-center gap-1"><User className="w-3 h-3" /> Quem Ativou</div></th>
+                    <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase"><div className="flex items-center gap-1"><FileText className="w-3 h-3" /> Observação</div></th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-gray-200">
-                  {leadsFiltrados.length === 0 ? (
-                    <tr>
-                      <td colSpan={6} className="px-4 py-8 text-center text-gray-500">
-                        <Users className="w-12 h-12 mx-auto mb-2 text-gray-300" />
-                        <p>Nenhum lead encontrado</p>
+                <tbody className="divide-y divide-gray-100">
+                  {leads.map(lead => (
+                    <tr key={lead.id} className="hover:bg-gray-50 transition-colors">
+                      <td className="px-3 py-2.5 font-mono text-purple-600 font-medium text-xs">{lead.cod}</td>
+                      <td className="px-3 py-2.5">
+                        <div className="font-medium text-gray-800 text-xs">{lead.nome || '—'}</div>
+                        {lead.email && <div className="text-[10px] text-gray-400">{lead.email}</div>}
+                      </td>
+                      <td className="px-3 py-2.5">
+                        {lead.celular ? (
+                          <a href={wppLink(lead.celular)} target="_blank" rel="noopener noreferrer"
+                            className="inline-flex items-center gap-1 text-green-700 hover:text-green-900 hover:underline text-xs font-medium">
+                            <MessageCircle className="w-3 h-3" /> {lead.celular}
+                          </a>
+                        ) : <span className="text-gray-400 text-xs">—</span>}
+                        {lead.telefone_fixo && <div className="text-[10px] text-gray-400">{lead.telefone_fixo}</div>}
+                      </td>
+                      <td className="px-3 py-2.5">
+                        <span className="text-xs text-gray-700">{lead.regiao || '—'}</span>
+                        {lead.estado && <span className="text-[10px] text-gray-400 ml-1">{lead.estado}</span>}
+                      </td>
+                      <td className="px-3 py-2.5 text-xs text-gray-600">{fmtData(lead.data_cadastro)}</td>
+                      <td className="px-3 py-2.5">{statusBadge(lead.status_api)}</td>
+                      <td className="px-3 py-2.5 text-xs text-gray-600">{fmtData(lead.data_ativacao)}</td>
+                      <td className="px-3 py-2.5">
+                        <QuemAtivouCell lead={lead} ativadores={ativadores} onSave={salvarQuemAtivou} />
+                      </td>
+                      <td className="px-3 py-2.5">
+                        <ObservacaoCell lead={lead} onSave={salvarObservacao} />
                       </td>
                     </tr>
-                  ) : (
-                    leadsFiltrados.map((lead) => (
-                      <tr key={lead.id} className="hover:bg-gray-50">
-                        <td className="px-4 py-3 whitespace-nowrap">
-                          <span className="font-mono text-sm bg-gray-100 px-2 py-1 rounded">
-                            {lead.codigo || '---'}
-                          </span>
-                        </td>
-                        <td className="px-4 py-3">
-                          <span className="font-medium text-gray-900">
-                            {lead.nome || 'Sem nome'}
-                          </span>
-                        </td>
-                        <td className="px-4 py-3 whitespace-nowrap">
-                          <a
-                            href={lead.whatsappLink}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="text-blue-600 hover:text-blue-800 hover:underline flex items-center gap-1"
-                          >
-                            <Phone className="w-4 h-4" />
-                            {formatarTelefone(lead.telefone)}
-                          </a>
-                        </td>
-                        <td className="px-4 py-3 whitespace-nowrap">
-                          <span className="px-2 py-1 bg-purple-100 text-purple-700 rounded-full text-sm">
-                            {lead.regiao}
-                          </span>
-                        </td>
-                        <td className="px-4 py-3 whitespace-nowrap">
-                          <span className="text-sm text-gray-600">
-                            {lead.data_cadastro || '---'}
-                          </span>
-                        </td>
-                        <td className="px-4 py-3 whitespace-nowrap">
-                          <a
-                            href={lead.whatsappLink}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="inline-flex items-center gap-2 px-3 py-1.5 bg-green-500 text-white rounded-lg hover:bg-green-600 transition-colors text-sm"
-                          >
-                            <MessageCircle className="w-4 h-4" />
-                            Abrir
-                          </a>
-                        </td>
-                      </tr>
-                    ))
-                  )}
+                  ))}
                 </tbody>
               </table>
             </div>
-
-            {/* Footer */}
-            {leadsFiltrados.length > 0 && (
-              <div className="px-4 py-3 bg-gray-50 border-t text-sm text-gray-500">
-                Mostrando {leadsFiltrados.length} de {leads.length} leads não iniciados
-              </div>
-            )}
           </div>
+
+          {/* Paginação */}
+          {totalPages > 1 && (
+            <div className="flex items-center justify-between mt-4">
+              <p className="text-sm text-gray-500">
+                {(page - 1) * 50 + 1}–{Math.min(page * 50, total)} de {total}
+              </p>
+              <div className="flex items-center gap-2">
+                <button onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page === 1}
+                  className="p-2 rounded-lg border border-gray-300 hover:bg-gray-50 disabled:opacity-30"><ChevronLeft className="w-4 h-4" /></button>
+                <span className="text-sm text-gray-600 px-3">{page} / {totalPages}</span>
+                <button onClick={() => setPage(p => Math.min(totalPages, p + 1))} disabled={page === totalPages}
+                  className="p-2 rounded-lg border border-gray-300 hover:bg-gray-50 disabled:opacity-30"><ChevronRight className="w-4 h-4" /></button>
+              </div>
+            </div>
+          )}
         </>
       )}
 
-      {/* Estado vazio */}
-      {leads.length === 0 && !isLoading && (
-        <div className="card p-12 text-center">
-          <Upload className="w-16 h-16 text-gray-300 mx-auto mb-4" />
-          <h3 className="text-lg font-medium text-gray-700 mb-2">
-            Nenhum lead na lista
-          </h3>
-          <p className="text-gray-500 mb-4">
-            Faça upload de uma planilha Excel com os leads para verificar quais ainda não estão no CRM
-          </p>
-          <label
-            htmlFor="file-upload"
-            className="btn-primary inline-flex items-center gap-2 cursor-pointer"
-          >
-            <Upload className="w-4 h-4" />
-            Selecionar Arquivo
-          </label>
+      {/* Regiões clicáveis */}
+      {stats && stats.porRegiao.length > 0 && (
+        <div className="mt-6 card p-4">
+          <h3 className="font-medium text-gray-700 mb-3 flex items-center gap-2"><MapPin className="w-4 h-4" /> Por Região</h3>
+          <div className="flex flex-wrap gap-2">
+            {stats.porRegiao.map(({ regiao, quantidade }) => (
+              <span key={regiao}
+                onClick={() => { setRegiaoFiltro(regiaoFiltro === regiao ? '' : regiao); setPage(1); }}
+                className={clsx('px-3 py-1 rounded-full text-sm cursor-pointer transition-colors',
+                  regiaoFiltro === regiao ? 'bg-purple-600 text-white' : 'bg-purple-50 text-purple-700 hover:bg-purple-100')}>
+                {regiao}: <strong>{quantidade}</strong>
+              </span>
+            ))}
+          </div>
         </div>
       )}
     </div>

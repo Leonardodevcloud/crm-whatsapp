@@ -53,8 +53,8 @@ function BackgroundProcesses() {
     // Executar imediatamente após 1 segundo
     const initialTimer = setTimeout(executarProcessosBackground, 1000);
 
-    // Executar a cada 2 minutos (120000ms)
-    intervalRef.current = setInterval(executarProcessosBackground, 120000);
+    // Executar a cada 15 minutos (900000ms) — antes era 2min, desnecessário
+    intervalRef.current = setInterval(executarProcessosBackground, 900000);
 
     return () => {
       clearTimeout(initialTimer);

@@ -14,7 +14,7 @@ import { supabase, supabaseAdmin } from '@/lib/supabase';
 const PLANILHA_CSV_URL = 'https://docs.google.com/spreadsheets/d/1d7jI-q7OjhH5vU69D3Vc_6Boc9xjLZPVR8efjMo1yAE/export?format=csv&gid=0';
 
 // URL da planilha de Tráfego Pago
-const PLANILHA_TP_URL = 'https://docs.google.com/spreadsheets/d/1fC1i_qTiUmX77-Y5iRjGIJRzMSifPUSeULe_Thh1rZU/export?format=csv&gid=0';
+const PLANILHA_TP_URL = 'https://docs.google.com/spreadsheets/d/1MOttPq20kzgnTY5Rv_9ocJNsp3ZFad0_xt_M96utES8/export?format=csv&gid=0';
 
 // Normaliza telefone para comparação (remove tudo exceto números)
 function normalizarTelefone(telefone: string): string {
@@ -57,6 +57,26 @@ function gerarVariacoesTelefone(telefone: string): string[] {
   return variacoes;
 }
 
+// Parser CSV robusto — lida com vírgulas dentro de campos entre aspas
+function parseCSVLine(line: string): string[] {
+  const result: string[] = [];
+  let current = '';
+  let inQuotes = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (ch === '"') {
+      inQuotes = !inQuotes;
+    } else if (ch === ',' && !inQuotes) {
+      result.push(current.trim());
+      current = '';
+    } else if (ch !== '\r') {
+      current += ch;
+    }
+  }
+  result.push(current.trim());
+  return result;
+}
+
 // Parseia CSV para array de objetos
 function parseCSV(csvText: string): Record<string, string>[] {
   // Remove BOM se existir
@@ -65,10 +85,8 @@ function parseCSV(csvText: string): Record<string, string>[] {
   if (linhas.length < 2) return [];
   
   // Primeira linha é o header - limpa bem os nomes
-  const headers = linhas[0].split(',').map(h => 
-    h.trim()
-      .replace(/"/g, '')
-      .replace(/^\uFEFF/, '') // Remove BOM de cada campo também
+  const headers = parseCSVLine(linhas[0]).map(h => 
+    h.replace(/^\uFEFF/, '') // Remove BOM de cada campo também
       .normalize('NFD').replace(/[\u0300-\u036f]/g, '') // Remove acentos
       .toLowerCase()
   );
@@ -81,8 +99,7 @@ function parseCSV(csvText: string): Record<string, string>[] {
     const linha = linhas[i];
     if (!linha.trim()) continue;
     
-    // Parse simples de CSV
-    const valores = linha.split(',').map(v => v.trim().replace(/"/g, ''));
+    const valores = parseCSVLine(linha);
     
     const obj: Record<string, string> = {};
     headers.forEach((header, index) => {
@@ -99,22 +116,20 @@ function parseCSV(csvText: string): Record<string, string>[] {
 function parseDataBR(dataStr: string): string | null {
   if (!dataStr || dataStr.trim() === '') return null;
   
-  // Tentar diferentes formatos
   const partes = dataStr.split(/[\/\-]/);
   if (partes.length === 3) {
     const dia = partes[0].padStart(2, '0');
     const mes = partes[1].padStart(2, '0');
     let ano = partes[2];
     
-    // Se ano tem 2 dígitos, assumir 2000+
     if (ano.length === 2) {
       ano = '20' + ano;
     }
     
-    // Validar se é uma data válida
+    // Validar
     const dataISO = `${ano}-${mes}-${dia}`;
-    const dataObj = new Date(dataISO);
-    if (!isNaN(dataObj.getTime())) {
+    const numAno = parseInt(ano), numMes = parseInt(mes), numDia = parseInt(dia);
+    if (numAno >= 2000 && numMes >= 1 && numMes <= 12 && numDia >= 1 && numDia <= 31) {
       return dataISO;
     }
   }
@@ -242,10 +257,11 @@ export async function POST(req: NextRequest) {
           const telefone = row['Phone'] || row['phone'] || row['Telefone'] || row['telefone'] || '';
           const tp = row['TP'] || row['tp'] || row['Tp'] || '';
           
-          if (telefone && tp) {
-            const telNormalizado = normalizarTelefone(telefone);
-            if (telNormalizado) {
-              mapaTP.set(telNormalizado, tp.trim());
+          if (telefone && tp && tp.startsWith('TP')) {
+            // Indexar por TODAS as variações para maximizar match
+            const variacoesTP = gerarVariacoesTelefone(telefone);
+            for (const v of variacoesTP) {
+              mapaTP.set(v, tp.trim());
             }
           }
         });
@@ -263,7 +279,7 @@ export async function POST(req: NextRequest) {
     // ============================================
     const { data: leads, error: errorLeads } = await client
       .from('dados_cliente')
-      .select('id, telefone, nomewpp, regiao, cod_profissional, tags')
+      .select('id, telefone, nomewpp, regiao, cod_profissional, tags, data_ativacao')
       .eq('status', 'ativo');
 
     if (errorLeads) throw errorLeads;
@@ -291,46 +307,34 @@ export async function POST(req: NextRequest) {
           }
         }
 
-        // Buscar na planilha de TP (match EXATO, sem variações com/sem 9)
+        // Buscar na planilha de TP (usa TODAS as variações para máximo match)
         let tagTP: string | null = null;
-        const telNorm = normalizarTelefone(lead.telefone);
-        if (mapaTP.has(telNorm)) {
-          tagTP = mapaTP.get(telNorm)!;
-        } else if (mapaTP.has('55' + telNorm)) {
-          tagTP = mapaTP.get('55' + telNorm)!;
+        for (const variacao of variacoes) {
+          if (mapaTP.has(variacao)) {
+            tagTP = mapaTP.get(variacao)!;
+            break;
+          }
         }
 
-        // Preparar update
+        // Preparar update — só incluir campos que realmente mudaram
         const updateData: any = {};
         
         if (dadosEncontrados) {
-          // SEMPRE atualizar região se encontrou cidade
-          if (dadosEncontrados.cidade) {
+          if (dadosEncontrados.cidade && dadosEncontrados.cidade !== (lead.regiao || '')) {
             updateData.regiao = dadosEncontrados.cidade;
           }
           
-          // SEMPRE atualizar nome se encontrou na planilha
-          if (dadosEncontrados.nome) {
+          if (dadosEncontrados.nome && dadosEncontrados.nome !== (lead.nomewpp || '')) {
             updateData.nomewpp = dadosEncontrados.nome;
           }
           
-          // SEMPRE atualizar código do profissional
-          if (dadosEncontrados.codigo) {
+          if (dadosEncontrados.codigo && dadosEncontrados.codigo !== (lead.cod_profissional || '')) {
             updateData.cod_profissional = dadosEncontrados.codigo;
           }
           
-          // SEMPRE atualizar data de ativação se encontrou na planilha
-          if (dadosEncontrados.dataAtivacao) {
+          if (dadosEncontrados.dataAtivacao && dadosEncontrados.dataAtivacao !== ((lead.data_ativacao || '').substring(0, 10) || '')) {
             updateData.data_ativacao = dadosEncontrados.dataAtivacao;
           }
-          
-          // Log para debug
-          console.log(`[Enriquecer] Lead ${lead.id} - Dados encontrados:`, {
-            nome: dadosEncontrados.nome,
-            cidade: dadosEncontrados.cidade,
-            codigo: dadosEncontrados.codigo,
-            dataAtivacao: dadosEncontrados.dataAtivacao,
-          });
         }
         
         // Adicionar tag do Tráfego Pago se encontrou
