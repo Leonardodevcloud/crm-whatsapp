@@ -161,18 +161,11 @@ function AlocacaoContent() {
       setTotal(data.total);
       setTotalPages(data.totalPages);
       if (data.kpis) setKpis(data.kpis);
+      if (data.clientes) setClientes(data.clientes);
+      if (data.alocadores) setAlocadores(data.alocadores);
     }
     setIsLoading(false);
   }, [fetchApi, filtroCliente, filtroStatus, filtroAlocador, busca, page]);
-
-  const carregarDropdowns = useCallback(async () => {
-    const [cRes, aRes] = await Promise.all([
-      fetchApi('/api/alocacao/clientes'),
-      fetchApi('/api/alocacao/alocadores'),
-    ]);
-    if (cRes.data?.success) setClientes(cRes.data.data);
-    if (aRes.data?.success) setAlocadores(aRes.data.data);
-  }, [fetchApi]);
 
   // ── Actions ──
   const importarSheet = async () => {
@@ -181,7 +174,7 @@ function AlocacaoContent() {
     if (e) setError(e);
     else if (data?.success) {
       setSuccessMsg(data.message); setTimeout(() => setSuccessMsg(null), 8000);
-      carregarAlocacoes(false); carregarDropdowns();
+      carregarAlocacoes(false);
     }
     setIsImporting(false);
   };
@@ -200,7 +193,7 @@ function AlocacaoContent() {
   const buscarProfissional = async (cod: string) => {
     if (!cod || cod.length < 2) return;
     setBuscandoProf(true);
-    const { data } = await fetchApi(`/api/alocacao/profissional/${cod}`);
+    const { data } = await fetchApi(`/api/alocacao?lookup_prof=${cod}`);
     if (data?.success && data.nome) {
       setForm(prev => ({ ...prev, nome_prof: data.nome }));
     }
@@ -218,14 +211,14 @@ function AlocacaoContent() {
       setSuccessMsg('Alocação criada!'); setTimeout(() => setSuccessMsg(null), 5000);
       setShowModal(false);
       setForm({ cod_cliente: '', nome_cliente: '', cod_prof: '', nome_prof: '', quem_alocou: '', data_prevista: '', obs: '' });
-      carregarAlocacoes(false); carregarDropdowns();
+      carregarAlocacoes(false);
     }
   };
 
   const atualizarCampo = async (id: number, campo: string, valor: any) => {
     await fetchApi(`/api/alocacao/${id}`, { method: 'PATCH', body: JSON.stringify({ [campo]: valor }) });
     setAlocacoes(prev => prev.map(a => a.id === id ? { ...a, [campo]: valor } : a));
-    if (campo === 'quem_alocou' || campo === 'nome_cliente') carregarDropdowns();
+    
   };
 
   const removerAlocacao = async (id: number) => {
@@ -239,7 +232,7 @@ function AlocacaoContent() {
   useEffect(() => {
     if (hasLoaded.current) return;
     hasLoaded.current = true;
-    carregarAlocacoes(); carregarDropdowns();
+    carregarAlocacoes();
   }, []);
 
   useEffect(() => {
@@ -259,7 +252,7 @@ function AlocacaoContent() {
           <p className="text-sm text-gray-500 mt-1">{total} profissionais alocados</p>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
-          <button onClick={() => { carregarAlocacoes(); carregarDropdowns(); }} disabled={isLoading}
+          <button onClick={() => { carregarAlocacoes(); }} disabled={isLoading}
             className="flex items-center gap-2 px-3 py-2 text-sm rounded-lg border border-gray-300 hover:bg-gray-50 disabled:opacity-50">
             <RefreshCw className={clsx('w-4 h-4', isLoading && 'animate-spin')} /> Atualizar
           </button>
@@ -287,12 +280,32 @@ function AlocacaoContent() {
       {/* KPIs */}
       {kpis && (
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 mb-6">
-          <div className="card p-4"><div className="flex items-center gap-3"><div className="w-10 h-10 bg-purple-100 rounded-xl flex items-center justify-center"><Users className="w-5 h-5 text-purple-600" /></div><div><p className="text-2xl font-bold text-purple-600">{kpis.total}</p><p className="text-xs text-gray-500">Total</p></div></div></div>
-          <div className="card p-4"><div className="flex items-center gap-3"><div className="w-10 h-10 bg-red-100 rounded-xl flex items-center justify-center"><XCircle className="w-5 h-5 text-red-600" /></div><div><p className="text-2xl font-bold text-red-600">{kpis.nao_rodou}</p><p className="text-xs text-gray-500">Não Rodou</p></div></div></div>
-          <div className="card p-4"><div className="flex items-center gap-3"><div className="w-10 h-10 bg-green-100 rounded-xl flex items-center justify-center"><CheckCircle className="w-5 h-5 text-green-600" /></div><div><p className="text-2xl font-bold text-green-600">{kpis.em_operacao}</p><p className="text-xs text-gray-500">Em Operação</p></div></div></div>
-          <div className="card p-4"><div className="flex items-center gap-3"><div className="w-10 h-10 bg-orange-100 rounded-xl flex items-center justify-center"><TrendingDown className="w-5 h-5 text-orange-600" /></div><div><p className="text-2xl font-bold text-orange-600">{kpis.possivel_churn}</p><p className="text-xs text-gray-500">Possível Churn</p></div></div></div>
-          <div className="card p-4"><div className="flex items-center gap-3"><div className="w-10 h-10 bg-red-200 rounded-xl flex items-center justify-center"><AlertCircle className="w-5 h-5 text-red-800" /></div><div><p className="text-2xl font-bold text-red-800">{kpis.churn}</p><p className="text-xs text-gray-500">Churn</p></div></div></div>
-          <div className="card p-4"><div className="flex items-center gap-3"><div className="w-10 h-10 bg-blue-100 rounded-xl flex items-center justify-center"><ArrowUpCircle className="w-5 h-5 text-blue-600" /></div><div><p className="text-2xl font-bold text-blue-600">{kpis.voltou_operacao}</p><p className="text-xs text-gray-500">Voltou Op.</p></div></div></div>
+          {[
+            { key: '',                label: 'Total',          valor: kpis.total,            bgIcon: 'bg-purple-100', txtIcon: 'text-purple-600', txtVal: 'text-purple-600', icon: Users },
+            { key: 'nao_rodou',       label: 'Não Rodou',      valor: kpis.nao_rodou,        bgIcon: 'bg-red-100',    txtIcon: 'text-red-600',    txtVal: 'text-red-600',    icon: XCircle },
+            { key: 'em_operacao',     label: 'Em Operação',    valor: kpis.em_operacao,      bgIcon: 'bg-green-100',  txtIcon: 'text-green-600',  txtVal: 'text-green-600',  icon: CheckCircle },
+            { key: 'possivel_churn',  label: 'Possível Churn', valor: kpis.possivel_churn,   bgIcon: 'bg-orange-100', txtIcon: 'text-orange-600', txtVal: 'text-orange-600', icon: TrendingDown },
+            { key: 'churn',           label: 'Churn',          valor: kpis.churn,            bgIcon: 'bg-red-200',    txtIcon: 'text-red-800',    txtVal: 'text-red-800',    icon: AlertCircle },
+            { key: 'voltou_operacao', label: 'Voltou Op.',     valor: kpis.voltou_operacao,  bgIcon: 'bg-blue-100',   txtIcon: 'text-blue-600',   txtVal: 'text-blue-600',   icon: ArrowUpCircle },
+          ].map(card => {
+            const Icon = card.icon;
+            const isActive = filtroStatus === card.key;
+            return (
+              <div key={card.key || 'total'}
+                onClick={() => { setFiltroStatus(isActive ? '' : card.key); setPage(1); }}
+                className={clsx('card p-4 cursor-pointer transition-all hover:shadow-md', isActive && 'ring-2 ring-purple-500 shadow-md')}>
+                <div className="flex items-center gap-3">
+                  <div className={clsx('w-10 h-10 rounded-xl flex items-center justify-center', card.bgIcon)}>
+                    <Icon className={clsx('w-5 h-5', card.txtIcon)} />
+                  </div>
+                  <div>
+                    <p className={clsx('text-2xl font-bold', card.txtVal)}>{card.valor}</p>
+                    <p className="text-xs text-gray-500">{card.label}</p>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
         </div>
       )}
 
