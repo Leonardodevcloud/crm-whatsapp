@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import AuthLayout from '@/components/AuthLayout';
 import { useApi } from '@/lib/hooks';
 import {
-  Users, UserCheck, TrendingUp, RefreshCw, Loader2, AlertCircle,
+  Users, UserCheck, UserPlus, TrendingUp, RefreshCw, Loader2, AlertCircle,
   MapPin, Calendar, Skull, Sparkles, Truck, XCircle, Tag, Info, BarChart3, Zap,
 } from 'lucide-react';
 
@@ -24,7 +24,7 @@ function InfoTooltip({ text }: { text: string }) {
 }
 
 interface AnalyticsData {
-  kpis: { totalCadastros: number; totalAtivos: number; totalInativos: number; naoAtivados: number; mortos: number; ressuscitados: number; emOperacao: number; naoOperando: number; taxaConversao: number; taxaOperacao: number; taxaPerda: number };
+  kpis: { totalCadastros: number; totalAtivos: number; totalAlocados: number; totalInativos: number; naoAtivados: number; mortos: number; ressuscitados: number; emOperacao: number; naoOperando: number; taxaConversao: number; taxaOperacao: number; taxaPerda: number };
   funil: Array<{ stage: string; quantidade: number; cor: string; base: number }>;
   funilTP: Array<{ stage: string; quantidade: number; cor: string; base: number }>;
   conversaoOperacao: { leadsAtivados: number; emOperacao: number; naoOperando: number; taxaReal: number };
@@ -32,6 +32,7 @@ interface AnalyticsData {
   naoAtivadosPorRegiao: Array<{ regiao: string; quantidade: number }>;
   tpPorRegiao: Array<{ regiao: string; quantidade: number }>;
   porOperador: Array<{ operador: string; quantidade: number }>;
+  porOperadorAlocacao: Array<{ operador: string; quantidade: number }>;
   porDia: Array<{ data: string; cadastros: number; leadsCrm: number }>;
   mortos: number;
   ressuscitados: { total: number };
@@ -179,7 +180,7 @@ function AnalyticsContent() {
   if (error) return <div className="p-6 bg-red-50 rounded-lg text-red-700 flex items-center gap-2"><AlertCircle className="w-5 h-5" /> {error}</div>;
   if (!data) return null;
 
-  const { kpis, funil, funilTP, conversaoOperacao, porRegiao, naoAtivadosPorRegiao, tpPorRegiao, porOperador, porDia } = data;
+  const { kpis, funil, funilTP, conversaoOperacao, porRegiao, naoAtivadosPorRegiao, tpPorRegiao, porOperador, porOperadorAlocacao, porDia } = data;
 
   return (
     <div className="p-4 md:p-6 max-w-[1600px] mx-auto space-y-6">
@@ -199,9 +200,10 @@ function AnalyticsContent() {
       </div>
 
       {/* KPIs */}
-      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4">
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
         <div className="card p-5"><div className="flex items-center gap-3"><div className="w-12 h-12 bg-purple-100 rounded-xl flex items-center justify-center"><Users className="w-6 h-6 text-purple-600" /></div><div><p className="text-3xl font-bold text-purple-600">{kpis.totalCadastros.toLocaleString()}</p><p className="text-xs text-gray-500">Total Cadastros</p><p className="text-xs text-gray-400 mt-0.5">Não ativados: {kpis.naoAtivados}</p></div></div></div>
         <div className="card p-5"><div className="flex items-center gap-3"><div className="w-12 h-12 bg-green-100 rounded-xl flex items-center justify-center"><UserCheck className="w-6 h-6 text-green-600" /></div><div><p className="text-3xl font-bold text-green-600">{kpis.totalAtivos.toLocaleString()}</p><p className="text-xs text-gray-500">Ativados</p><p className="text-xs text-green-500 mt-0.5">{kpis.taxaConversao}% conversão</p></div></div></div>
+        <div className="card p-5"><div className="flex items-center gap-3"><div className="w-12 h-12 bg-violet-100 rounded-xl flex items-center justify-center"><UserPlus className="w-6 h-6 text-violet-600" /></div><div><p className="text-3xl font-bold text-violet-600">{kpis.totalAlocados?.toLocaleString() || 0}</p><p className="text-xs text-gray-500">Alocados</p></div></div></div>
         <div className="card p-5"><div className="flex items-center gap-3"><div className="w-12 h-12 bg-gray-100 rounded-xl flex items-center justify-center"><Skull className="w-6 h-6 text-gray-500" /></div><div><p className="text-3xl font-bold text-gray-600">{kpis.mortos}</p><p className="text-xs text-gray-500">Mortos</p><p className="text-xs text-gray-400 mt-0.5">{kpis.taxaPerda}% perda</p></div></div></div>
         <div className="card p-5"><div className="flex items-center gap-3"><div className="w-12 h-12 bg-pink-100 rounded-xl flex items-center justify-center"><Sparkles className="w-6 h-6 text-pink-600" /></div><div><p className="text-3xl font-bold text-pink-600">{kpis.ressuscitados}</p><p className="text-xs text-gray-500">Ressuscitados</p></div></div></div>
         <div className="card p-5"><div className="flex items-center gap-3"><div className="w-12 h-12 bg-blue-100 rounded-xl flex items-center justify-center"><Truck className="w-6 h-6 text-blue-600" /></div><div><p className="text-3xl font-bold text-blue-600">{kpis.emOperacao}</p><p className="text-xs text-gray-500">Em Operação</p><p className="text-xs text-blue-500 mt-0.5">{kpis.taxaOperacao}% taxa real</p></div></div></div>
@@ -231,7 +233,7 @@ function AnalyticsContent() {
         <div className="card p-5"><h3 className="text-lg font-bold text-gray-800 flex items-center gap-2 mb-4"><Tag className="w-5 h-5 text-purple-600" /> TP por Região <span className="text-xs bg-purple-100 text-purple-700 px-2 py-0.5 rounded-full">{tpPorRegiao.reduce((s, r) => s + r.quantidade, 0)} total</span></h3><RegionBars items={tpPorRegiao} colors={COLORS} /></div>
       </div>
 
-      {/* Operador + Não ativados */}
+      {/* Operadores */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <div className="card p-5">
           <h3 className="text-lg font-bold text-gray-800 flex items-center gap-2 mb-4"><Zap className="w-5 h-5 text-green-600" /> Ativações por Operador</h3>
@@ -243,6 +245,20 @@ function AnalyticsContent() {
             {porOperador.length === 0 && <p className="text-gray-400 text-center py-8">Sem dados</p>}
           </div>
         </div>
+        <div className="card p-5">
+          <h3 className="text-lg font-bold text-gray-800 flex items-center gap-2 mb-4"><UserPlus className="w-5 h-5 text-violet-600" /> Alocações por Operador</h3>
+          <div className="space-y-3 max-h-96 overflow-y-auto">
+            {(porOperadorAlocacao || []).map((item, i) => { const maxO = (porOperadorAlocacao || [])[0]?.quantidade || 1; return (
+              <div key={item.operador}><div className="flex justify-between items-center mb-1"><span className="text-sm font-medium text-gray-700">{i + 1}. {item.operador}</span><span className="text-sm font-bold">{item.quantidade}</span></div>
+                <div className="w-full bg-gray-100 rounded-full h-6 overflow-hidden"><div className="h-full rounded-full" style={{ width: `${(item.quantidade / maxO) * 100}%`, backgroundColor: ['#8B5CF6','#7C3AED','#6D28D9','#5B21B6','#4C1D95'][i % 5] }} /></div></div>
+            ); })}
+            {(!porOperadorAlocacao || porOperadorAlocacao.length === 0) && <p className="text-gray-400 text-center py-8">Sem dados</p>}
+          </div>
+        </div>
+      </div>
+
+      {/* Não Ativados por Região */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <div className="card p-5">
           <h3 className="text-lg font-bold text-gray-800 flex items-center gap-2 mb-4"><XCircle className="w-5 h-5 text-orange-500" /> Não Ativados por Região <span className="text-xs bg-orange-100 text-orange-700 px-2 py-0.5 rounded-full">{naoAtivadosPorRegiao.reduce((s, r) => s + r.quantidade, 0)} total</span></h3>
           <div className="grid grid-cols-2 md:grid-cols-3 gap-2 max-h-96 overflow-y-auto">

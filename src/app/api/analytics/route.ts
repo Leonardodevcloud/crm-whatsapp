@@ -172,12 +172,39 @@ export async function GET(req: NextRequest) {
 
         if (biResult?.resultado) {
           codsEmOperacaoSet = new Set(biResult.resultado.filter((r: any) => r.em_operacao).map((r: any) => String(r.cod_profissional)));
-          // TP em Operação = TP Ativados que estão em operação
           const codsTPAtivados = new Set(leadsTPAtivados.map(l => String(l.cod_profissional)));
           tpEmOperacao = Array.from(codsTPAtivados).filter(c => codsEmOperacaoSet.has(c)).length;
         }
       }
     } catch (err: any) { console.error('[Analytics] Erro BI:', err.message); }
+
+    // ═══ 4. ALOCAÇÕES (mesmo período) ═══
+    let totalAlocados = 0;
+    let alocacoesPorOperador: Record<string, number> = {};
+    try {
+      const alocResp = await fetch(`${BI_API_URL}/api/crm/alocacao?limit=50000&todos=true`, {
+        headers: { 'Content-Type': 'application/json', ...(CRM_SERVICE_KEY ? { 'x-service-key': CRM_SERVICE_KEY } : {}) },
+      }).then(r => r.json()).catch(() => ({ success: false, data: [] }));
+
+      const todasAlocacoes: any[] = alocResp?.data || [];
+
+      // Filtrar alocações criadas no período selecionado
+      const alocacoesPeriodo = todasAlocacoes.filter((a: any) => {
+        if (!a.created_at) return false;
+        const d = a.created_at.split('T')[0];
+        return d >= dataInicioStr && d <= dataFimStr;
+      });
+
+      totalAlocados = alocacoesPeriodo.length;
+
+      // Agrupar por quem_alocou
+      alocacoesPeriodo.forEach((a: any) => {
+        const op = a.quem_alocou || 'N/I';
+        alocacoesPorOperador[op] = (alocacoesPorOperador[op] || 0) + 1;
+      });
+
+      console.log(`[Analytics] Alocações período: ${totalAlocados}`);
+    } catch (err: any) { console.error('[Analytics] Erro alocações:', err.message); }
 
     // ═══ RESPOSTA ═══
     const naoAtivados = totalCadastros - totalAtivos;
@@ -189,10 +216,11 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({
       success: true,
       data: {
-        kpis: { totalCadastros, totalAtivos, totalInativos, naoAtivados, mortos: leadsMortos.length, ressuscitados: ressuscitados.length, emOperacao, naoOperando: totalAtivos - emOperacao, taxaConversao, taxaOperacao, taxaPerda },
+        kpis: { totalCadastros, totalAtivos, totalAlocados, totalInativos, naoAtivados, mortos: leadsMortos.length, ressuscitados: ressuscitados.length, emOperacao, naoOperando: totalAtivos - emOperacao, taxaConversao, taxaOperacao, taxaPerda },
         funil: [
           { stage: 'Total Cadastros', quantidade: totalCadastros, cor: '#6366F1', base: totalCadastros },
           { stage: 'Ativados', quantidade: totalAtivos, cor: '#22C55E', base: totalCadastros },
+          { stage: 'Alocados', quantidade: totalAlocados, cor: '#8B5CF6', base: totalAtivos },
           { stage: 'Em Operação', quantidade: emOperacao, cor: '#3B82F6', base: totalAtivos },
         ],
         funilTP: [
@@ -206,6 +234,7 @@ export async function GET(req: NextRequest) {
         naoAtivadosPorRegiao: Object.entries(naoAtivadosPorRegiao).map(([r, q]) => ({ regiao: r, quantidade: q })).sort((a, b) => b.quantidade - a.quantidade),
         tpPorRegiao: Object.entries(tpPorRegiao).map(([r, q]) => ({ regiao: r, quantidade: q })).sort((a, b) => b.quantidade - a.quantidade),
         porOperador: Object.entries(ativacoesPorOperador).map(([o, q]) => ({ operador: o, quantidade: q })).sort((a, b) => b.quantidade - a.quantidade),
+        porOperadorAlocacao: Object.entries(alocacoesPorOperador).map(([o, q]) => ({ operador: o, quantidade: q })).sort((a, b) => b.quantidade - a.quantidade),
         porDia: Object.keys(cadastrosPorDia).map(data => ({ data, cadastros: cadastrosPorDia[data], leadsCrm: leadsCrmPorDia[data] || 0 })),
         mortos: leadsMortos.length,
         ressuscitados: { total: ressuscitados.length },
