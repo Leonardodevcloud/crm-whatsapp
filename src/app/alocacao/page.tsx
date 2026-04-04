@@ -191,14 +191,20 @@ function AlocacaoContent() {
   };
 
   const buscarProfissional = async (cod: string) => {
-    if (!cod || cod.length < 2) return;
+    if (!cod || cod.length < 3 || isNaN(Number(cod))) return;
     setBuscandoProf(true);
-    const { data } = await fetchApi(`/api/alocacao?lookup_prof=${cod}`);
-    if (data?.success && data.nome) {
-      setForm(prev => ({ ...prev, nome_prof: data.nome }));
-    }
+    try {
+      const { data } = await fetchApi(`/api/alocacao?lookup_prof=${cod}`);
+      if (data?.success && data.nome) {
+        setForm(prev => ({ ...prev, nome_prof: data.nome }));
+      } else {
+        setForm(prev => ({ ...prev, nome_prof: '' }));
+      }
+    } catch {}
     setBuscandoProf(false);
   };
+
+  const profLookupTimer = useRef<NodeJS.Timeout | null>(null);
 
   const criarAlocacao = async () => {
     if (!form.cod_prof) { setError('Código do profissional é obrigatório'); return; }
@@ -453,8 +459,12 @@ function AlocacaoContent() {
                 <label className="block text-xs font-medium text-gray-600 mb-1">Código do Profissional *</label>
                 <div className="flex gap-2">
                   <input type="text" value={form.cod_prof}
-                    onChange={(e) => setForm(prev => ({ ...prev, cod_prof: e.target.value }))}
-                    onBlur={() => buscarProfissional(form.cod_prof)}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      setForm(prev => ({ ...prev, cod_prof: val, nome_prof: '' }));
+                      if (profLookupTimer.current) clearTimeout(profLookupTimer.current);
+                      profLookupTimer.current = setTimeout(() => buscarProfissional(val), 500);
+                    }}
                     placeholder="Ex: 14789"
                     className="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-purple-500" />
                   {buscandoProf && <Loader2 className="w-5 h-5 animate-spin text-purple-500 self-center" />}
