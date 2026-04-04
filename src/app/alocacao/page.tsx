@@ -133,6 +133,8 @@ function AlocacaoContent() {
   const [filtroStatus, setFiltroStatus] = useState('');
   const [filtroAlocador, setFiltroAlocador] = useState('');
   const [busca, setBusca] = useState('');
+  const [mesFiltro, setMesFiltro] = useState(new Date().getMonth() + 1);
+  const [anoFiltro, setAnoFiltro] = useState(new Date().getFullYear());
   const [page, setPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
   const [total, setTotal] = useState(0);
@@ -152,6 +154,8 @@ function AlocacaoContent() {
     if (filtroStatus)  params.set('status', filtroStatus);
     if (filtroAlocador) params.set('quem_alocou', filtroAlocador);
     if (busca) params.set('search', busca);
+    params.set('mes', String(mesFiltro));
+    params.set('ano', String(anoFiltro));
     params.set('page', String(page));
     params.set('limit', '50');
 
@@ -165,7 +169,7 @@ function AlocacaoContent() {
       if (data.alocadores) setAlocadores(data.alocadores);
     }
     setIsLoading(false);
-  }, [fetchApi, filtroCliente, filtroStatus, filtroAlocador, busca, page]);
+  }, [fetchApi, filtroCliente, filtroStatus, filtroAlocador, busca, mesFiltro, anoFiltro, page]);
 
   // ── Actions ──
   const importarSheet = async () => {
@@ -244,7 +248,7 @@ function AlocacaoContent() {
   useEffect(() => {
     if (!hasLoaded.current) return;
     carregarAlocacoes();
-  }, [filtroCliente, filtroStatus, filtroAlocador, busca, page]);
+  }, [filtroCliente, filtroStatus, filtroAlocador, busca, mesFiltro, anoFiltro, page]);
 
   // ── Render ──
   return (
@@ -255,7 +259,7 @@ function AlocacaoContent() {
           <h1 className="text-2xl font-bold text-gray-800 flex items-center gap-2">
             <UserPlus className="w-7 h-7 text-purple-600" /> Alocação
           </h1>
-          <p className="text-sm text-gray-500 mt-1">{total} profissionais alocados</p>
+          <p className="text-sm text-gray-500 mt-1">{total} profissionais alocados em {['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'][mesFiltro-1]}/{anoFiltro}</p>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
           <button onClick={() => { carregarAlocacoes(); }} disabled={isLoading}
@@ -314,6 +318,40 @@ function AlocacaoContent() {
           })}
         </div>
       )}
+
+      {/* Seletor de Mês */}
+      <div className="flex items-center justify-center gap-3 mb-4">
+        <button onClick={() => {
+          if (mesFiltro === 1) { setMesFiltro(12); setAnoFiltro(anoFiltro - 1); }
+          else setMesFiltro(mesFiltro - 1);
+          setPage(1);
+        }} className="p-2 rounded-lg border border-gray-300 hover:bg-gray-50">
+          <ChevronLeft className="w-4 h-4" />
+        </button>
+        <div className="flex items-center gap-2">
+          <select value={mesFiltro} onChange={(e) => { setMesFiltro(parseInt(e.target.value)); setPage(1); }}
+            className="px-3 py-2 border border-gray-300 rounded-lg text-sm font-medium focus:outline-none focus:ring-2 focus:ring-purple-500">
+            {['Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro'].map((m, i) => (
+              <option key={i+1} value={i+1}>{m}</option>
+            ))}
+          </select>
+          <select value={anoFiltro} onChange={(e) => { setAnoFiltro(parseInt(e.target.value)); setPage(1); }}
+            className="px-3 py-2 border border-gray-300 rounded-lg text-sm font-medium focus:outline-none focus:ring-2 focus:ring-purple-500">
+            {[2025, 2026, 2027].map(a => <option key={a} value={a}>{a}</option>)}
+          </select>
+        </div>
+        <button onClick={() => {
+          if (mesFiltro === 12) { setMesFiltro(1); setAnoFiltro(anoFiltro + 1); }
+          else setMesFiltro(mesFiltro + 1);
+          setPage(1);
+        }} className="p-2 rounded-lg border border-gray-300 hover:bg-gray-50">
+          <ChevronRight className="w-4 h-4" />
+        </button>
+        {(mesFiltro !== new Date().getMonth() + 1 || anoFiltro !== new Date().getFullYear()) && (
+          <button onClick={() => { setMesFiltro(new Date().getMonth() + 1); setAnoFiltro(new Date().getFullYear()); setPage(1); }}
+            className="px-3 py-1.5 text-xs text-purple-600 hover:text-purple-800 underline font-medium">Mês atual</button>
+        )}
+      </div>
 
       {/* Filtros */}
       <div className="flex flex-wrap gap-3 mb-4">
