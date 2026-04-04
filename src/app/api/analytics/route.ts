@@ -188,8 +188,9 @@ export async function GET(req: NextRequest) {
 
       const todasAlocacoes: any[] = alocResp?.data || [];
 
-      // Filtrar alocações criadas no período selecionado
+      // Filtrar alocações manuais do período (ignora importadas)
       const alocacoesPeriodo = todasAlocacoes.filter((a: any) => {
+        if (a.importado) return false;
         if (!a.created_at) return false;
         const d = a.created_at.split('T')[0];
         return d >= dataInicioStr && d <= dataFimStr;
