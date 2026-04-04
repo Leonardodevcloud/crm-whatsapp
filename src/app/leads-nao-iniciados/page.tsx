@@ -359,7 +359,8 @@ function LeadsNaoIniciadosContent() {
     await fetchApi(`/api/leads-captura/${id}`, {
       method: 'PATCH', body: JSON.stringify({ quem_ativou: valor }),
     });
-    setLeads(prev => prev.map(l => l.id === id ? { ...l, quem_ativou: valor.toUpperCase() } : l));
+    const hoje = new Date().toISOString().split('T')[0];
+    setLeads(prev => prev.map(l => l.id === id ? { ...l, quem_ativou: valor.toUpperCase(), data_ativacao: l.data_ativacao || hoje } : l));
     carregarAtivadores(); // refresh dropdown
   };
 
