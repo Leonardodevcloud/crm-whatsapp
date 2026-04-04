@@ -182,15 +182,14 @@ export async function GET(req: NextRequest) {
     let totalAlocados = 0;
     let alocacoesPorOperador: Record<string, number> = {};
     try {
-      const alocResp = await fetch(`${BI_API_URL}/api/crm/alocacao?limit=50000&todos=true`, {
+      const alocResp = await fetch(`${BI_API_URL}/api/crm/alocacao?limit=50000&todos=true&importado=false`, {
         headers: { 'Content-Type': 'application/json', ...(CRM_SERVICE_KEY ? { 'x-service-key': CRM_SERVICE_KEY } : {}) },
       }).then(r => r.json()).catch(() => ({ success: false, data: [] }));
 
       const todasAlocacoes: any[] = alocResp?.data || [];
 
-      // Filtrar alocações manuais do período (ignora importadas)
+      // Filtrar alocações manuais do período
       const alocacoesPeriodo = todasAlocacoes.filter((a: any) => {
-        if (a.importado) return false;
         if (!a.created_at) return false;
         const d = a.created_at.split('T')[0];
         return d >= dataInicioStr && d <= dataFimStr;
