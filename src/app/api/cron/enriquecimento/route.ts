@@ -1,9 +1,10 @@
 // ===========================================
 // API: /api/cron/enriquecimento
 // POST: Enriquecimento automático (chamado pelo N8N a cada 10min)
-// 
+//
 // 3 etapas:
-// 1. Enriquecer pela planilha (região, nome, código, tags TP)
+// 1. Enriquecer via banco de profissionais (CRM → planilha fallback)
+//    + planilha TP (tráfego pago) para tags
 // 2. Verificar status na API Tutts (ativo/inativo → muda stage)
 // 3. Automação de follow-ups (cria, mata, ressuscita)
 //
@@ -14,9 +15,14 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getUserFromHeader } from '@/lib/auth';
 import { supabase, supabaseAdmin } from '@/lib/supabase';
 import { verificarStatusProfissional, determinarNovoStage } from '@/lib/tutts-api';
+import {
+  fetchProfissionaisCadastro,
+  normalizarTelefone,
+  gerarVariacoesTelefone,
+} from '@/lib/profissionais-cadastro';
 
 const CRON_SECRET = process.env.CRON_SECRET || 'tutts-cron-2026';
-const PLANILHA_CSV_URL = 'https://docs.google.com/spreadsheets/d/1d7jI-q7OjhH5vU69D3Vc_6Boc9xjLZPVR8efjMo1yAE/export?format=csv&gid=0';
+// Planilha TP (tráfego pago) — sheet DIFERENTE do banco de profissionais
 const PLANILHA_TP_URL = 'https://docs.google.com/spreadsheets/d/1MOttPq20kzgnTY5Rv_9ocJNsp3ZFad0_xt_M96utES8/export?format=csv&gid=0';
 
 // Limites para não sobrecarregar
@@ -42,30 +48,7 @@ const MOTIVOS = {
 // ============================================
 // UTILS
 // ============================================
-function normalizarTelefone(telefone: string): string {
-  if (!telefone) return '';
-  let numeros = telefone.replace(/\D/g, '');
-  if (numeros.length >= 12 && numeros.startsWith('55')) {
-    numeros = numeros.substring(2);
-  }
-  if (numeros.length === 10) {
-    numeros = numeros.substring(0, 2) + '9' + numeros.substring(2);
-  }
-  return numeros;
-}
-
-function gerarVariacoesTelefone(telefone: string): string[] {
-  const normalizado = normalizarTelefone(telefone);
-  if (!normalizado) return [];
-  const variacoes: string[] = [normalizado];
-  variacoes.push('55' + normalizado);
-  if (normalizado.length === 11) {
-    const sem9 = normalizado.substring(0, 2) + normalizado.substring(3);
-    variacoes.push(sem9);
-    variacoes.push('55' + sem9);
-  }
-  return variacoes;
-}
+// normalizarTelefone / gerarVariacoesTelefone → importados de @/lib/profissionais-cadastro
 
 // Parser CSV robusto — lida com vírgulas dentro de campos entre aspas
 function parseCSVLine(line: string): string[] {
@@ -220,38 +203,30 @@ export async function POST(req: NextRequest) {
     }
 
     // ============================================
-    // ETAPA 1: ENRIQUECER PELA PLANILHA
+    // ETAPA 1: ENRIQUECER VIA BANCO DE PROFISSIONAIS (CRM → planilha)
     // ============================================
-    console.log('[CRON] Etapa 1: Carregando planilhas...');
+    console.log('[CRON] Etapa 1: Carregando banco de profissionais + planilha TP...');
 
-    // Planilha principal
+    // Banco de profissionais (backend Central Tutts resolve CRM → planilha)
     const mapaPlanilha = new Map<string, any>();
     try {
-      const resp = await fetch(PLANILHA_CSV_URL, { headers: { 'Accept': 'text/csv' } });
-      if (resp.ok) {
-        const csv = await resp.text();
-        const dados = parseCSV(csv);
-        dados.forEach(row => {
-          const codigo = row['codigo'] || row['cod'] || '';
-          const nome = row['nome'] || row['name'] || '';
-          const telefone = row['telefone'] || row['phone'] || row['tel'] || '';
-          const cidade = row['cidade'] || row['city'] || row['regiao'] || '';
-          const dataAtivRaw = row['data ativacao'] || row['data_ativacao'] || '';
-          if (telefone) {
-            const norm = normalizarTelefone(telefone);
-            if (norm) {
-              mapaPlanilha.set(norm, {
-                codigo, nome, telefone: norm,
-                cidade: cidade.toUpperCase(),
-                dataAtivacao: parseDataBR(dataAtivRaw),
-              });
-            }
-          }
+      const cadastro = await fetchProfissionaisCadastro();
+      for (const p of cadastro.data) {
+        if (!p.telefone) continue;
+        const norm = normalizarTelefone(p.telefone);
+        if (!norm) continue;
+        mapaPlanilha.set(norm, {
+          codigo:       p.codigo || '',
+          nome:         p.nome || '',
+          telefone:     norm,
+          cidade:       (p.regiao || p.cidade || '').toUpperCase(),
+          // Backend já devolve em ISO YYYY-MM-DD ou string vazia
+          dataAtivacao: p.dataAtivacao && /^\d{4}-\d{2}-\d{2}$/.test(p.dataAtivacao) ? p.dataAtivacao : null,
         });
-        console.log(`[CRON] Planilha principal: ${mapaPlanilha.size} registros`);
       }
+      console.log(`[CRON] Banco de profissionais: ${mapaPlanilha.size} registros (CRM=${cadastro.estatisticas?.por_origem?.crm ?? '?'} planilha=${cadastro.estatisticas?.por_origem?.planilha ?? '?'})`);
     } catch (e: any) {
-      console.error('[CRON] Erro planilha principal:', e.message);
+      console.error('[CRON] Erro ao buscar banco de profissionais:', e.message);
     }
 
     // Planilha TP — popular com TODAS as variações de telefone

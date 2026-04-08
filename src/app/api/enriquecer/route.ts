@@ -1,7 +1,10 @@
 // ===========================================
 // API: /api/enriquecer
-// POST: Enriquece leads com dados da planilha Google Sheets
-// - Busca planilha CSV
+// POST: Enriquece leads com dados do banco de profissionais
+// - Fonte primária: crm_leads_capturados (via backend Central Tutts)
+// - Fallback: planilha Google Sheets legada (lado backend)
+// - Planilha TP (Tráfego Pago) segue sendo consumida diretamente aqui
+//   (sheet diferente, fora do escopo da migração)
 // - Cruza por telefone
 // - Atualiza: regiao, nomewpp, cod_profissional, tags (TP)
 // ===========================================
@@ -9,55 +12,19 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getUserFromHeader } from '@/lib/auth';
 import { supabase, supabaseAdmin } from '@/lib/supabase';
+import {
+  fetchProfissionaisCadastro,
+  normalizarTelefone,
+  gerarVariacoesTelefone,
+} from '@/lib/profissionais-cadastro';
 
-// URL da planilha principal (profissionais)
-const PLANILHA_CSV_URL = 'https://docs.google.com/spreadsheets/d/1d7jI-q7OjhH5vU69D3Vc_6Boc9xjLZPVR8efjMo1yAE/export?format=csv&gid=0';
-
-// URL da planilha de Tráfego Pago
+// URL da planilha de Tráfego Pago (sheet DIFERENTE do banco de profissionais)
 const PLANILHA_TP_URL = 'https://docs.google.com/spreadsheets/d/1MOttPq20kzgnTY5Rv_9ocJNsp3ZFad0_xt_M96utES8/export?format=csv&gid=0';
 
-// Normaliza telefone para comparação (remove tudo exceto números)
-function normalizarTelefone(telefone: string): string {
-  if (!telefone) return '';
-  
-  // Remove tudo que não é número
-  let numeros = telefone.replace(/\D/g, '');
-  
-  // Remove código do país (55) se tiver
-  if (numeros.length >= 12 && numeros.startsWith('55')) {
-    numeros = numeros.substring(2);
-  }
-  
-  // Garante 11 dígitos (com 9 na frente)
-  if (numeros.length === 10) {
-    // Adiciona o 9 após o DDD
-    numeros = numeros.substring(0, 2) + '9' + numeros.substring(2);
-  }
-  
-  return numeros;
-}
-
-// Gera variações do telefone para busca
-function gerarVariacoesTelefone(telefone: string): string[] {
-  const normalizado = normalizarTelefone(telefone);
-  if (!normalizado) return [];
-  
-  const variacoes: string[] = [normalizado];
-  
-  // Com código do país
-  variacoes.push('55' + normalizado);
-  
-  // Sem o 9 (telefone antigo)
-  if (normalizado.length === 11) {
-    const sem9 = normalizado.substring(0, 2) + normalizado.substring(3);
-    variacoes.push(sem9);
-    variacoes.push('55' + sem9);
-  }
-  
-  return variacoes;
-}
+// Normaliza telefone/variações → importados de @/lib/profissionais-cadastro
 
 // Parser CSV robusto — lida com vírgulas dentro de campos entre aspas
+// (usado apenas pela planilha TP que continua sendo consumida aqui)
 function parseCSVLine(line: string): string[] {
   const result: string[] = [];
   let current = '';
@@ -168,65 +135,48 @@ export async function POST(req: NextRequest) {
     };
 
     // ============================================
-    // 1. BUSCAR PLANILHA CSV
+    // 1. BUSCAR BANCO DE PROFISSIONAIS (CRM → planilha fallback via backend)
     // ============================================
-    console.log('[Enriquecer] Buscando planilha CSV...');
-    
-    const response = await fetch(PLANILHA_CSV_URL, {
-      headers: {
-        'Accept': 'text/csv',
-      },
-    });
+    console.log('[Enriquecer] Buscando banco de profissionais via backend...');
 
-    if (!response.ok) {
-      throw new Error(`Erro ao buscar planilha: ${response.status} ${response.statusText}`);
-    }
+    const cadastro = await fetchProfissionaisCadastro();
+    const dadosPlanilha = cadastro.data;
 
-    const csvText = await response.text();
-    const dadosPlanilha = parseCSV(csvText);
-    
-    console.log(`[Enriquecer] Planilha carregada: ${dadosPlanilha.length} registros`);
-    
+    console.log(`[Enriquecer] Banco carregado: ${dadosPlanilha.length} registros (CRM=${cadastro.estatisticas?.por_origem?.crm ?? '?'} planilha=${cadastro.estatisticas?.por_origem?.planilha ?? '?'})`);
+
     // Log do primeiro registro para debug
     if (dadosPlanilha.length > 0) {
-      console.log('[Enriquecer] Primeiro registro da planilha:', dadosPlanilha[0]);
+      console.log('[Enriquecer] Primeiro registro:', dadosPlanilha[0]);
     }
-    
+
     resultados.totalPlanilha = dadosPlanilha.length;
 
     // ============================================
-    // 2. CRIAR MAPA DE TELEFONES DA PLANILHA
+    // 2. CRIAR MAPA DE TELEFONES (CRM + planilha mesclados pelo backend)
     // ============================================
     // Estrutura: { telefoneNormalizado: dadosPlanilha }
     const mapaPlanilha = new Map<string, DadosPlanilha>();
-    
-    dadosPlanilha.forEach(row => {
-      // Headers da planilha (podem ter acento)
-      // Coluna A = Código, B = Nome, C = Telefone, D = Cidade, F = Data Ativação
-      const codigo = row['Código'] || row['Codigo'] || row['codigo'] || row['cod'] || '';
-      const nome = row['Nome'] || row['nome'] || row['name'] || '';
-      const telefone = row['Telefone'] || row['telefone'] || row['phone'] || row['tel'] || '';
-      const cidade = row['Cidade'] || row['cidade'] || row['city'] || row['regiao'] || '';
-      const dataAtivacaoRaw = row['Data Ativação'] || row['Data Ativacao'] || row['data ativacao'] || row['data_ativacao'] || '';
-      
-      // Converter data BR para ISO
-      const dataAtivacao = parseDataBR(dataAtivacaoRaw);
-      
-      if (telefone) {
-        const telNormalizado = normalizarTelefone(telefone);
-        if (telNormalizado) {
-          mapaPlanilha.set(telNormalizado, {
-            codigo,
-            nome,
-            telefone,
-            telefoneNormalizado: telNormalizado,
-            cidade: cidade.toUpperCase(),
-            dataAtivacao,
-          });
-        }
-      }
+
+    dadosPlanilha.forEach(p => {
+      if (!p.telefone) return;
+      const telNormalizado = normalizarTelefone(p.telefone);
+      if (!telNormalizado) return;
+
+      // Data já vem em ISO (YYYY-MM-DD) do backend, ou string vazia
+      const dataAtivacao = p.dataAtivacao && /^\d{4}-\d{2}-\d{2}$/.test(p.dataAtivacao)
+        ? p.dataAtivacao
+        : null;
+
+      mapaPlanilha.set(telNormalizado, {
+        codigo:              p.codigo || '',
+        nome:                p.nome || '',
+        telefone:            p.telefone,
+        telefoneNormalizado: telNormalizado,
+        cidade:              (p.regiao || p.cidade || '').toUpperCase(),
+        dataAtivacao,
+      });
     });
-    
+
     console.log(`[Enriquecer] Mapa criado: ${mapaPlanilha.size} telefones únicos`);
 
     // ============================================
@@ -411,27 +361,21 @@ export async function GET(req: NextRequest) {
   }
 
   try {
-    // Buscar preview da planilha
-    const response = await fetch(PLANILHA_CSV_URL);
-    if (!response.ok) {
-      throw new Error(`Erro ao buscar planilha: ${response.status}`);
-    }
-
-    const csvText = await response.text();
-    const dados = parseCSV(csvText);
+    const cadastro = await fetchProfissionaisCadastro();
 
     return NextResponse.json({
       success: true,
       data: {
-        totalRegistros: dados.length,
-        preview: dados.slice(0, 5), // Primeiros 5 registros
-        colunas: dados.length > 0 ? Object.keys(dados[0]) : [],
+        totalRegistros: cadastro.data.length,
+        por_origem:     cadastro.estatisticas?.por_origem || null,
+        preview:        cadastro.data.slice(0, 5),
+        colunas:        cadastro.data.length > 0 ? Object.keys(cadastro.data[0]) : [],
       },
     });
 
   } catch (error: any) {
     return NextResponse.json(
-      { error: 'Erro ao verificar planilha', success: false, details: error.message },
+      { error: 'Erro ao verificar banco de profissionais', success: false, details: error.message },
       { status: 500 }
     );
   }

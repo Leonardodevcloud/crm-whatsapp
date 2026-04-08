@@ -1,54 +1,18 @@
 // ===========================================
 // API: /api/profissionais
-// GET: Lista profissionais da planilha Google Sheets
+// GET: Lista profissionais do banco (crm_leads_capturados → planilha fallback)
+//
+// Antes: lia CSV do Google Sheets diretamente.
+// Agora: proxy para o backend Central Tutts, que resolve CRM → planilha.
 // ===========================================
+
+export const dynamic = 'force-dynamic';
 
 import { NextRequest, NextResponse } from 'next/server';
 import { getUserFromHeader } from '@/lib/auth';
 
-// URL da planilha exportada como CSV
-const PLANILHA_CSV_URL = 'https://docs.google.com/spreadsheets/d/1d7jI-q7OjhH5vU69D3Vc_6Boc9xjLZPVR8efjMo1yAE/export?format=csv&gid=0';
-
-// Parseia CSV para array de objetos
-function parseCSV(csvText: string): Record<string, string>[] {
-  const cleanText = csvText.replace(/^\uFEFF/, '');
-  const linhas = cleanText.split('\n');
-  if (linhas.length < 2) return [];
-  
-  // Primeira linha é o header
-  const headers = linhas[0].split(',').map(h => 
-    h.trim().replace(/"/g, '').replace(/^\uFEFF/, '')
-  );
-  
-  console.log('[Profissionais] Headers encontrados:', headers);
-  
-  const dados: Record<string, string>[] = [];
-  
-  for (let i = 1; i < linhas.length; i++) {
-    const linha = linhas[i];
-    if (!linha.trim()) continue;
-    
-    const valores = linha.split(',').map(v => v.trim().replace(/"/g, ''));
-    
-    const obj: Record<string, string> = {};
-    headers.forEach((header, index) => {
-      obj[header] = valores[index] || '';
-    });
-    
-    dados.push(obj);
-  }
-  
-  return dados;
-}
-
-interface Profissional {
-  codigo: string;
-  nome: string;
-  telefone: string;
-  regiao: string;
-  dataAtivacao: string;
-  quemAtivou: string;
-}
+const BI_API_URL = process.env.BI_API_URL || 'https://tutts-backend-production.up.railway.app';
+const CRM_SERVICE_KEY = process.env.CRM_SERVICE_KEY || '';
 
 export async function GET(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
@@ -59,73 +23,42 @@ export async function GET(req: NextRequest) {
   }
 
   try {
-    // Buscar planilha
-    console.log('[Profissionais] Buscando planilha...');
-    const response = await fetch(PLANILHA_CSV_URL, {
-      headers: { 'Accept': 'text/csv' },
+    console.log('[Profissionais] Consultando backend (CRM + planilha fallback)...');
+    const resp = await fetch(`${BI_API_URL}/api/crm/profissionais-cadastro`, {
+      method: 'GET',
+      headers: {
+        'Accept': 'application/json',
+        ...(CRM_SERVICE_KEY ? { 'x-service-key': CRM_SERVICE_KEY } : {}),
+      },
+      // Sem cache — sempre dado fresco
+      cache: 'no-store',
     });
 
-    if (!response.ok) {
-      throw new Error(`Erro ao buscar planilha: ${response.status}`);
+    if (!resp.ok) {
+      const errText = await resp.text().catch(() => '');
+      throw new Error(`Backend HTTP ${resp.status}: ${errText.slice(0, 200)}`);
     }
 
-    const csvText = await response.text();
-    const dadosPlanilha = parseCSV(csvText);
-    
-    console.log(`[Profissionais] Planilha carregada: ${dadosPlanilha.length} registros`);
+    const payload = await resp.json();
+    const dados: Array<any> = Array.isArray(payload?.data) ? payload.data : [];
 
-    // Mapear dados
-    const profissionais: Profissional[] = [];
-    const regioesSet = new Set<string>();
-    const ativadoresSet = new Set<string>();
+    console.log(`[Profissionais] Backend retornou: ${dados.length} registros (origem CRM=${payload?.estatisticas?.por_origem?.crm ?? '?'} planilha=${payload?.estatisticas?.por_origem?.planilha ?? '?'})`);
 
-    for (const row of dadosPlanilha) {
-      // Mapear colunas (flexível para diferentes nomes)
-      const codigo = row['Código'] || row['Codigo'] || row['codigo'] || '';
-      const nome = row['Nome'] || row['nome'] || '';
-      const telefone = row['Telefone'] || row['telefone'] || '';
-      const cidade = row['Cidade'] || row['cidade'] || '';
-      const dataAtivacao = row['Data Ativação'] || row['Data Ativacao'] || row['data ativação'] || row['data ativacao'] || '';
-      const quemAtivou = row['Quem Ativou'] || row['quem ativou'] || '';
-
-      // Coletar regiões e ativadores únicos
-      if (cidade) regioesSet.add(cidade.toUpperCase());
-      if (quemAtivou) ativadoresSet.add(quemAtivou);
-
-      profissionais.push({
-        codigo,
-        nome,
-        telefone,
-        regiao: cidade.toUpperCase(),
-        dataAtivacao,
-        quemAtivou,
-      });
-    }
-
-    // Estatísticas
-    const estatisticas = {
-      total: profissionais.length,
-      porRegiao: {} as Record<string, number>,
-      porAtivador: {} as Record<string, number>,
-    };
-
-    profissionais.forEach(p => {
-      if (p.regiao) {
-        estatisticas.porRegiao[p.regiao] = (estatisticas.porRegiao[p.regiao] || 0) + 1;
-      }
-      if (p.quemAtivou) {
-        estatisticas.porAtivador[p.quemAtivou] = (estatisticas.porAtivador[p.quemAtivou] || 0) + 1;
-      }
-    });
-
+    // Formato compatível com o consumidor antigo (/src/app/profissionais/page.tsx)
     return NextResponse.json({
       success: true,
-      data: profissionais,
-      estatisticas,
-      regioes: Array.from(regioesSet).sort(),
-      ativadores: Array.from(ativadoresSet).sort(),
+      data: dados.map((p) => ({
+        codigo:       p.codigo || '',
+        nome:         p.nome || '',
+        telefone:     p.telefone || '',
+        regiao:       p.regiao || '',
+        dataAtivacao: p.dataAtivacao || '',
+        quemAtivou:   p.quemAtivou || '',
+      })),
+      estatisticas: payload?.estatisticas || { total: dados.length, porRegiao: {}, porAtivador: {} },
+      regioes:      payload?.regioes    || [],
+      ativadores:   payload?.ativadores || [],
     });
-
   } catch (error: any) {
     console.error('[Profissionais] Erro:', error);
     return NextResponse.json(

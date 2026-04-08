@@ -1,7 +1,7 @@
 // ===========================================
 // API: /api/verificar-operacao
 // Verifica se leads finalizados estão em operação no BI
-// Cruza CRM + Planilha Profissionais (deduplicado)
+// Cruza CRM (Supabase) + Banco de Profissionais (Central Tutts) (deduplicado)
 // ===========================================
 
 export const dynamic = 'force-dynamic';
@@ -9,55 +9,25 @@ export const dynamic = 'force-dynamic';
 import { NextRequest, NextResponse } from 'next/server';
 import { getUserFromHeader } from '@/lib/auth';
 import { supabase, supabaseAdmin } from '@/lib/supabase';
+import { fetchProfissionaisCadastro } from '@/lib/profissionais-cadastro';
 
 const BI_API_URL = process.env.BI_API_URL || 'https://tutts-backend-production.up.railway.app';
 const CRM_SERVICE_KEY = process.env.CRM_SERVICE_KEY || '';
-const PLANILHA_CSV_URL = 'https://docs.google.com/spreadsheets/d/1d7jI-q7OjhH5vU69D3Vc_6Boc9xjLZPVR8efjMo1yAE/export?format=csv&gid=0';
-
-// Parser CSV robusto — lida com vírgulas dentro de campos entre aspas
-function parseCSVLine(line: string): string[] {
-  const result: string[] = [];
-  let current = '';
-  let inQuotes = false;
-  for (let i = 0; i < line.length; i++) {
-    const ch = line[i];
-    if (ch === '"') {
-      inQuotes = !inQuotes;
-    } else if (ch === ',' && !inQuotes) {
-      result.push(current.trim());
-      current = '';
-    } else if (ch !== '\r') {
-      current += ch;
-    }
-  }
-  result.push(current.trim());
-  return result;
-}
-
-function parseCSV(csvText: string): Record<string, string>[] {
-  const cleanText = csvText.replace(/^\uFEFF/, '');
-  const linhas = cleanText.split('\n');
-  if (linhas.length < 2) return [];
-  const headers = parseCSVLine(linhas[0]).map(h => h.replace(/^\uFEFF/, ''));
-  const dados: Record<string, string>[] = [];
-  for (let i = 1; i < linhas.length; i++) {
-    const linha = linhas[i];
-    if (!linha.trim()) continue;
-    const valores = parseCSVLine(linha);
-    const obj: Record<string, string> = {};
-    headers.forEach((header, index) => { obj[header] = valores[index] || ''; });
-    dados.push(obj);
-  }
-  return dados;
-}
 
 function parseDateBR(dateStr: string): Date | null {
   if (!dateStr || !dateStr.trim()) return null;
-  const partes = dateStr.trim().split('/');
+  // Primeiro tenta ISO (YYYY-MM-DD), que é o formato devolvido pelo backend
+  const iso = dateStr.trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(iso)) {
+    const d = new Date(iso + 'T00:00:00');
+    return isNaN(d.getTime()) ? null : d;
+  }
+  // Fallback formato BR
+  const partes = iso.split('/');
   if (partes.length === 3) {
     return new Date(parseInt(partes[2]), parseInt(partes[1]) - 1, parseInt(partes[0]));
   }
-  const d = new Date(dateStr);
+  const d = new Date(iso);
   return isNaN(d.getTime()) ? null : d;
 }
 
@@ -98,38 +68,32 @@ export async function GET(req: NextRequest) {
     if (errorLeads) throw errorLeads;
 
     // ============================================
-    // 2. PLANILHA: profissionais ativados no período
+    // 2. BANCO DE PROFISSIONAIS: CRM → planilha fallback (via backend)
     // ============================================
     let profissionaisPlanilha: Array<{ codigo: string; nome: string; regiao: string; telefone: string }> = [];
     try {
-      const planilhaResp = await fetch(PLANILHA_CSV_URL, { headers: { 'Accept': 'text/csv' } });
-      if (planilhaResp.ok) {
-        const csvText = await planilhaResp.text();
-        const dadosPlanilha = parseCSV(csvText);
+      const resp = await fetchProfissionaisCadastro();
+      for (const p of resp.data) {
+        if (!p.codigo) continue;
 
-        dadosPlanilha.forEach(row => {
-          const codigo = row['Código'] || row['Codigo'] || row['codigo'] || '';
-          const nome = row['Nome'] || row['nome'] || '';
-          const cidade = (row['Cidade'] || row['cidade'] || '').toUpperCase();
-          const telefone = row['Telefone'] || row['telefone'] || '';
-          const dataAtivacao = row['Data Ativação'] || row['Data Ativacao'] || row['data ativação'] || row['data ativacao'] || '';
+        // Filtrar por data (dataAtivacao já vem em ISO YYYY-MM-DD do backend)
+        if (dataLimiteInicio && dataLimiteFim) {
+          const dt = parseDateBR(p.dataAtivacao);
+          if (!dt || dt < dataLimiteInicio || dt > dataLimiteFim) continue;
+        }
 
-          if (!codigo) return;
+        // Filtrar por região
+        if (regiao && p.regiao !== regiao.toUpperCase()) continue;
 
-          // Filtrar por data
-          if (dataLimiteInicio && dataLimiteFim) {
-            const dt = parseDateBR(dataAtivacao);
-            if (!dt || dt < dataLimiteInicio || dt > dataLimiteFim) return;
-          }
-
-          // Filtrar por região
-          if (regiao && cidade !== regiao.toUpperCase()) return;
-
-          profissionaisPlanilha.push({ codigo, nome, regiao: cidade, telefone });
+        profissionaisPlanilha.push({
+          codigo:   p.codigo,
+          nome:     p.nome || '',
+          regiao:   p.regiao || '',
+          telefone: p.telefone || '',
         });
       }
     } catch (err) {
-      console.error('[Operação] Erro ao buscar planilha:', err);
+      console.error('[Operação] Erro ao buscar banco de profissionais:', err);
     }
 
     // ============================================

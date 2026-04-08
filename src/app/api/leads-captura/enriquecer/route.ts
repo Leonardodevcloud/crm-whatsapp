@@ -1,60 +1,22 @@
+// ===========================================
+// API: /api/leads-captura/enriquecer
+// Monta mapas (por código e por telefone) com dados de ativação
+// vindos do banco de profissionais (CRM → planilha fallback via backend)
+// e envia para o backend Central Tutts atualizar os leads capturados.
+// ===========================================
+
 export const dynamic = 'force-dynamic';
 
 import { NextRequest, NextResponse } from 'next/server';
 import { getUserFromHeader } from '@/lib/auth';
 import { supabaseAdmin, supabase } from '@/lib/supabase';
+import {
+  fetchProfissionaisCadastro,
+  normalizarTelefone,
+} from '@/lib/profissionais-cadastro';
 
 const BI_API_URL = process.env.BI_API_URL || 'https://tutts-backend-production.up.railway.app';
 const CRM_SERVICE_KEY = process.env.CRM_SERVICE_KEY || '';
-const PLANILHA_CSV_URL = 'https://docs.google.com/spreadsheets/d/1d7jI-q7OjhH5vU69D3Vc_6Boc9xjLZPVR8efjMo1yAE/export?format=csv&gid=0';
-
-// Parser CSV robusto (mesmo do profissionais que já funciona)
-function parseCSVLine(line: string): string[] {
-  const result: string[] = [];
-  let current = '';
-  let inQuotes = false;
-  for (let i = 0; i < line.length; i++) {
-    const ch = line[i];
-    if (ch === '"') { inQuotes = !inQuotes; }
-    else if (ch === ',' && !inQuotes) { result.push(current.trim()); current = ''; }
-    else if (ch !== '\r') { current += ch; }
-  }
-  result.push(current.trim());
-  return result;
-}
-
-function parseCSV(csvText: string): Record<string, string>[] {
-  const cleanText = csvText.replace(/^\uFEFF/, '');
-  const linhas = cleanText.split('\n');
-  if (linhas.length < 2) return [];
-  const headers = parseCSVLine(linhas[0]).map(h =>
-    h.replace(/^\uFEFF/, '').replace(/"/g, '').trim()
-  );
-  const dados: Record<string, string>[] = [];
-  for (let i = 1; i < linhas.length; i++) {
-    if (!linhas[i].trim()) continue;
-    const valores = parseCSVLine(linhas[i]);
-    const obj: Record<string, string> = {};
-    headers.forEach((header, index) => { obj[header] = (valores[index] || '').replace(/"/g, '').trim(); });
-    dados.push(obj);
-  }
-  return dados;
-}
-
-function normalizarTelefone(telefone: string): string {
-  if (!telefone) return '';
-  let numeros = telefone.replace(/\D/g, '');
-  if (numeros.length >= 12 && numeros.startsWith('55')) numeros = numeros.substring(2);
-  if (numeros.length === 10) numeros = numeros.substring(0, 2) + '9' + numeros.substring(2);
-  return numeros;
-}
-
-function parseDataBR(dataStr: string): string | null {
-  if (!dataStr) return null;
-  const m = dataStr.match(/(\d{2})\/(\d{2})\/(\d{4})/);
-  if (m) return `${m[3]}-${m[2]}-${m[1]}`;
-  return null;
-}
 
 export async function POST(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
@@ -62,43 +24,47 @@ export async function POST(req: NextRequest) {
   if (!user) return NextResponse.json({ error: 'Não autenticado' }, { status: 401 });
 
   try {
-    // ═══ 1. PLANILHA (mesmo código do /api/profissionais que funciona) ═══
-    console.log('[Enriquecer] Buscando planilha...');
-    const csvResp = await fetch(PLANILHA_CSV_URL, { headers: { 'Accept': 'text/csv' } });
-    if (!csvResp.ok) throw new Error(`Planilha HTTP ${csvResp.status}`);
-    const csvText = await csvResp.text();
-    const dadosPlanilha = parseCSV(csvText);
-    console.log(`[Enriquecer] Planilha: ${dadosPlanilha.length} registros`);
+    // ═══ 1. BANCO DE PROFISSIONAIS (CRM → planilha fallback via backend) ═══
+    console.log('[Enriquecer] Buscando banco de profissionais...');
+    const cadastro = await fetchProfissionaisCadastro();
+    const dadosPlanilha = cadastro.data;
+    console.log(
+      `[Enriquecer] Banco: ${dadosPlanilha.length} registros ` +
+      `(CRM=${cadastro.estatisticas?.por_origem?.crm ?? '?'} ` +
+      `planilha=${cadastro.estatisticas?.por_origem?.planilha ?? '?'})`
+    );
 
-    // Criar mapa cod → { quem_ativou, data_ativacao }
-    // E mapa telefone → { quem_ativou, data_ativacao }
+    // ═══ 2. MAPAS por código e por telefone ═══
     const mapaPorCod: Record<string, { quem_ativou: string; data_ativacao: string | null }> = {};
     const mapaPorTel: Record<string, { quem_ativou: string; data_ativacao: string | null }> = {};
 
     let comQuemAtivou = 0;
-    for (const row of dadosPlanilha) {
-      const codigo = row['Código'] || row['Codigo'] || row['codigo'] || '';
-      const telefone = row['Telefone'] || row['telefone'] || '';
-      const dataAtivacao = row['Data Ativação'] || row['Data Ativacao'] || row['data ativação'] || row['data ativacao'] || '';
-      const quemAtivou = row['Quem Ativou'] || row['quem ativou'] || row['Quem ativou'] || '';
+    for (const p of dadosPlanilha) {
+      // Data já vem em ISO (YYYY-MM-DD) do backend, ou string vazia
+      const dataISO = p.dataAtivacao && /^\d{4}-\d{2}-\d{2}$/.test(p.dataAtivacao)
+        ? p.dataAtivacao
+        : null;
 
       const dados = {
-        quem_ativou: quemAtivou.toUpperCase().trim(),
-        data_ativacao: parseDataBR(dataAtivacao),
+        quem_ativou: (p.quemAtivou || '').toUpperCase().trim(),
+        data_ativacao: dataISO,
       };
 
-      if (quemAtivou) comQuemAtivou++;
+      if (dados.quem_ativou) comQuemAtivou++;
 
-      if (codigo) mapaPorCod[codigo.trim()] = dados;
-      if (telefone) {
-        const norm = normalizarTelefone(telefone);
+      if (p.codigo) mapaPorCod[String(p.codigo).trim()] = dados;
+      if (p.telefone) {
+        const norm = normalizarTelefone(p.telefone);
         if (norm) mapaPorTel[norm] = dados;
       }
     }
 
-    console.log(`[Enriquecer] Planilha processada: ${Object.keys(mapaPorCod).length} por cod | ${comQuemAtivou} com "Quem Ativou"`);
+    console.log(
+      `[Enriquecer] Mapas: ${Object.keys(mapaPorCod).length} por cod | ` +
+      `${Object.keys(mapaPorTel).length} por tel | ${comQuemAtivou} com "Quem Ativou"`
+    );
 
-    // ═══ 2. OBSERVAÇÕES DO SUPABASE ═══
+    // ═══ 3. OBSERVAÇÕES DO SUPABASE ═══
     const client = supabaseAdmin || supabase;
     const { data: obsRows } = await client
       .from('profissionais_observacoes')
@@ -110,18 +76,14 @@ export async function POST(req: NextRequest) {
     }
     console.log(`[Enriquecer] Observações Supabase: ${Object.keys(observacoes).length}`);
 
-    // ═══ 3. ENVIAR TUDO PRO BACKEND ═══
+    // ═══ 4. ENVIAR TUDO PRO BACKEND ═══
     const response = await fetch(`${BI_API_URL}/api/crm/leads-captura/enriquecer`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         ...(CRM_SERVICE_KEY ? { 'x-service-key': CRM_SERVICE_KEY } : {}),
       },
-      body: JSON.stringify({
-        mapaPorCod,
-        mapaPorTel,
-        observacoes,
-      }),
+      body: JSON.stringify({ mapaPorCod, mapaPorTel, observacoes }),
     });
 
     const data = await response.json();
