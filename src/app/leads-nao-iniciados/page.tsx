@@ -360,7 +360,38 @@ function LeadsNaoIniciadosContent() {
       method: 'PATCH', body: JSON.stringify({ quem_ativou: valor }),
     });
     const hoje = new Date().toISOString().split('T')[0];
-    setLeads(prev => prev.map(l => l.id === id ? { ...l, quem_ativou: valor.toUpperCase(), data_ativacao: l.data_ativacao || hoje } : l));
+    const nomeUpper = valor.toUpperCase();
+    const deveAtivar = !!valor;
+
+    // Atualização otimista da linha: quem_ativou, data_ativacao e status_api=ativo
+    // (o backend também força ativo; reconciliação MAP é só logging — nunca reverte)
+    setLeads(prev => prev.map(l => {
+      if (l.id !== id) return l;
+      const updated: any = {
+        ...l,
+        quem_ativou: nomeUpper,
+        data_ativacao: l.data_ativacao || hoje,
+      };
+      if (deveAtivar) updated.status_api = 'ativo';
+      return updated;
+    }));
+
+    // Atualização otimista dos KPIs: se o lead não era ativo e agora virou,
+    // bumpa o card "Ativos" e decrementa de onde estava (inativo / nao_encontrado / pendente)
+    if (deveAtivar) {
+      setStats(prev => {
+        if (!prev) return prev;
+        const leadAntes = leads.find(l => l.id === id);
+        const statusAntes = leadAntes?.status_api || null;
+        if (statusAntes === 'ativo') return prev; // já era ativo, nada a fazer
+        const next = { ...prev, ativos: (prev.ativos || 0) + 1 };
+        if (statusAntes === 'inativo') next.inativos = Math.max(0, (prev.inativos || 0) - 1);
+        else if (statusAntes === 'nao_encontrado') next.nao_encontrados = Math.max(0, (prev.nao_encontrados || 0) - 1);
+        else next.sem_verificacao = Math.max(0, (prev.sem_verificacao || 0) - 1);
+        return next;
+      });
+    }
+
     carregarAtivadores(); // refresh dropdown
   };
 
