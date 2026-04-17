@@ -1,532 +1,542 @@
-export const dynamic = 'force-dynamic';
+'use client';
 
-import { NextRequest, NextResponse } from 'next/server';
-import { getUserFromHeader } from '@/lib/auth';
-import { supabase, supabaseAdmin } from '@/lib/supabase';
+import { useState, useEffect, useCallback, useRef } from 'react';
+import AuthLayout from '@/components/AuthLayout';
+import { useApi } from '@/lib/hooks';
+import {
+  Users, UserCheck, UserPlus, TrendingUp, RefreshCw, Loader2, AlertCircle,
+  MapPin, Calendar, Truck, XCircle, Tag, Info, BarChart3, Zap, Plus, X, Download, Search,
+} from 'lucide-react';
 
-const BI_API_URL = process.env.BI_API_URL || 'https://tutts-backend-production.up.railway.app';
-const CRM_SERVICE_KEY = process.env.CRM_SERVICE_KEY || '';
-
-export async function GET(req: NextRequest) {
-  const authHeader = req.headers.get('authorization');
-  const user = getUserFromHeader(authHeader);
-  if (!user) return NextResponse.json({ error: 'Não autenticado' }, { status: 401 });
-
-  try {
-    const client = supabaseAdmin || supabase;
-    const { searchParams } = new URL(req.url);
-
-    const regiao = searchParams.get('regiao') || '';
-    const hoje = new Date();
-    const defaultInicio = `${hoje.getFullYear()}-${String(hoje.getMonth() + 1).padStart(2, '0')}-01`;
-    const ultimoDia = new Date(hoje.getFullYear(), hoje.getMonth() + 1, 0).getDate();
-    const defaultFim = `${hoje.getFullYear()}-${String(hoje.getMonth() + 1).padStart(2, '0')}-${String(ultimoDia).padStart(2, '0')}`;
-
-    const dataInicioStr = searchParams.get('dataInicio') || defaultInicio;
-    const dataFimStr = searchParams.get('dataFim') || defaultFim;
-    const dataLimiteInicio = new Date(dataInicioStr + 'T00:00:00');
-    const dataLimiteFim = new Date(dataFimStr + 'T23:59:59');
-
-    console.log(`[Analytics] Filtros: ${dataInicioStr} → ${dataFimStr} | regiao=${regiao || 'todas'}`);
-
-    // ═══ 1. DADOS BACKEND — buscar TODOS, filtrar localmente ═══
-    // Precisamos de 2 filtros diferentes:
-    //   Total Cadastros = por data_cadastro (quando se cadastrou)
-    //   Ativados = por data_ativacao (quando foi ativado) — bate com planilha
-    const params = new URLSearchParams();
-    if (regiao) params.set('regiao', regiao);
-    params.set('page', '1');
-    params.set('limit', '50000');
-
-    const backendResp = await fetch(`${BI_API_URL}/api/crm/leads-captura/?${params}`, {
-      headers: { 'Content-Type': 'application/json', ...(CRM_SERVICE_KEY ? { 'x-service-key': CRM_SERVICE_KEY } : {}) },
-    }).then(r => r.json()).catch(e => {
-      console.error('[Analytics] Erro backend:', e.message);
-      return { success: false, data: [] };
-    });
-
-    const todosLeads: any[] = backendResp?.data || [];
-
-    // Filtrar por data_cadastro → Total Cadastros
-    const leadsPorCadastro = todosLeads.filter((l: any) => {
-      if (!l.data_cadastro) return false;
-      const d = l.data_cadastro.split('T')[0];
-      return d >= dataInicioStr && d <= dataFimStr;
-    });
-
-    // Filtrar ativos por data_ativacao → Ativados (bate com planilha)
-    const leadsPorAtivacao = todosLeads.filter((l: any) => {
-      if (l.status_api !== 'ativo') return false;
-      if (!l.data_ativacao) return false;
-      const d = l.data_ativacao.split('T')[0];
-      return d >= dataInicioStr && d <= dataFimStr;
-    });
-
-    const totalCadastros = leadsPorCadastro.length;
-    const totalAtivos = leadsPorAtivacao.length;
-    const totalInativos = leadsPorCadastro.filter((l: any) => l.status_api === 'inativo').length;
-
-    console.log(`[Analytics] ${dataInicioStr}→${dataFimStr} | Total todos: ${todosLeads.length} | Cadastros período: ${totalCadastros} | Ativados período: ${totalAtivos}`);
-
-    // Set de códigos ativos no período (para cruzar com TP e BI)
-    const codsAtivosSet = new Set(leadsPorAtivacao.map((l: any) => String(l.cod)));
-
-    // Ativados por região (filtrado por data_ativacao)
-    const ativadosPorRegiao: Record<string, number> = {};
-    leadsPorAtivacao.forEach((l: any) => {
-      if (l.regiao) ativadosPorRegiao[l.regiao] = (ativadosPorRegiao[l.regiao] || 0) + 1;
-    });
-
-    // Não ativados por região
-    // FIX: bater EXATO com o KPI principal (totalCadastros − totalAtivos).
-    // Antes o `if (l.regiao)` excluía leads sem região → card somava menos que o KPI.
-    // Agora leads sem região caem em "SEM REGIÃO" e o total do card === KPI.
-    const naoAtivadosPorRegiao: Record<string, number> = {};
-    leadsPorCadastro
-      .filter((l: any) => !codsAtivosSet.has(String(l.cod)))
-      .forEach((l: any) => {
-        const reg = (l.regiao && String(l.regiao).trim()) || 'SEM REGIÃO';
-        naoAtivadosPorRegiao[reg] = (naoAtivadosPorRegiao[reg] || 0) + 1;
-      });
-
-    // Operador (ativados por data_ativacao)
-    const ativacoesPorOperador: Record<string, number> = {};
-    leadsPorAtivacao.filter((l: any) => l.quem_ativou).forEach((l: any) => {
-      ativacoesPorOperador[l.quem_ativou] = (ativacoesPorOperador[l.quem_ativou] || 0) + 1;
-    });
-
-    // Cadastros por dia (data_cadastro)
-    const cadastrosPorDia: Record<string, number> = {};
-    const hojeGrafico = new Date(); hojeGrafico.setHours(23, 59, 59, 999);
-    const diaAtual = new Date(dataLimiteInicio);
-    const limiteGrafico = dataLimiteFim < hojeGrafico ? dataLimiteFim : hojeGrafico;
-    while (diaAtual <= limiteGrafico) {
-      cadastrosPorDia[diaAtual.toISOString().split('T')[0]] = 0;
-      diaAtual.setDate(diaAtual.getDate() + 1);
-    }
-    leadsPorCadastro.forEach((l: any) => {
-      if (l.data_cadastro) {
-        const dia = l.data_cadastro.split('T')[0];
-        if (cadastrosPorDia[dia] !== undefined) cadastrosPorDia[dia]++;
-      }
-    });
-
-    // ═══ 2. CRM SUPABASE (tags TP) ═══
-    // Tags TP ficam em `dados_cliente.tags` após o cron /api/enriquecer rodar.
-    // Mas leads recentes podem ainda não ter sido enriquecidos — por isso o
-    // analytics também lê a planilha TP ao vivo e mescla os dois universos
-    // por telefone. Assim, um lead cadastrado hoje de manhã já aparece como
-    // TP no dashboard se estiver na planilha.
-    const { data: allLeads } = await client
-      .from('dados_cliente')
-      .select('id, stage, status, regiao, tags, telefone, created_at, updated_at, ressuscitado_em, vezes_ressuscitado, cod_profissional')
-      .limit(50000);
-
-    const leadsCrmNoPeriodo = (allLeads || []).filter(lead => {
-      if (!lead.created_at) return false;
-      const dt = new Date(lead.created_at);
-      if (dt < dataLimiteInicio || dt > dataLimiteFim) return false;
-      if (regiao && lead.regiao !== regiao) return false;
-      return true;
-    });
-
-    // Parser de tags robusto — aceita array JS, JSON string, formato postgres {}, objeto JSON
-    const parseTags = (tags: any): string[] => {
-      if (!tags) return [];
-      if (Array.isArray(tags)) return tags.map(t => String(t).trim()).filter(Boolean);
-      if (typeof tags === 'object') {
-        try {
-          const vals = Object.values(tags).flat();
-          return vals.map((t: any) => String(t).trim()).filter(Boolean);
-        } catch { return []; }
-      }
-      if (typeof tags === 'string') {
-        const str = tags.trim();
-        if (!str) return [];
-        if (str.startsWith('{') && str.endsWith('}')) {
-          return str.slice(1, -1).split(',').map(t => t.trim().replace(/^"|"$/g, '')).filter(Boolean);
-        }
-        if (str.startsWith('[') && str.endsWith(']')) {
-          try {
-            const arr = JSON.parse(str);
-            if (Array.isArray(arr)) return arr.map(t => String(t).trim()).filter(Boolean);
-          } catch { /* fallback abaixo */ }
-        }
-        return [str];
-      }
-      return [];
-    };
-
-    // ─── Planilha TP ao vivo (fallback para leads ainda não enriquecidos) ───
-    // Mesma planilha usada pelo /api/enriquecer. Cruzamos por telefone.
-    const PLANILHA_TP_URL = 'https://docs.google.com/spreadsheets/d/1MOttPq20kzgnTY5Rv_9ocJNsp3ZFad0_xt_M96utES8/export?format=csv&gid=0';
-
-    const normalizarTel = (tel: string): string => (tel || '').replace(/\D/g, '');
-    const gerarVariacoesTel = (tel: string): string[] => {
-      const norm = normalizarTel(tel);
-      if (!norm) return [];
-      const variacoes = new Set<string>([norm]);
-      // Sem DDI (55)
-      if (norm.startsWith('55') && norm.length >= 12) variacoes.add(norm.slice(2));
-      // Com DDI
-      if (!norm.startsWith('55')) variacoes.add('55' + norm);
-      // Com/sem 9 adicional no celular (formato brasileiro)
-      // 558199999999 ↔ 55819999999  | 8199999999 ↔ 819999999
-      const comDDI = norm.startsWith('55') ? norm : '55' + norm;
-      if (comDDI.length === 13) { // ex: 5581 9 9999 9999 → remover 9 após DDD
-        variacoes.add(comDDI.slice(0, 4) + comDDI.slice(5));
-        variacoes.add((comDDI.slice(0, 4) + comDDI.slice(5)).slice(2)); // sem DDI
-      } else if (comDDI.length === 12) { // ex: 558199999999 → adicionar 9
-        variacoes.add(comDDI.slice(0, 4) + '9' + comDDI.slice(4));
-        variacoes.add((comDDI.slice(0, 4) + '9' + comDDI.slice(4)).slice(2));
-      }
-      return Array.from(variacoes);
-    };
-
-    // Parse CSV básico (lida com aspas e BOM)
-    const parseCsvLinha = (l: string): string[] => {
-      const out: string[] = []; let cur = ''; let q = false;
-      for (let i = 0; i < l.length; i++) {
-        const c = l[i];
-        if (c === '"') q = !q;
-        else if (c === ',' && !q) { out.push(cur.trim()); cur = ''; }
-        else if (c !== '\r') cur += c;
-      }
-      out.push(cur.trim());
-      return out;
-    };
-
-    // Map telefone(variação) → { tag, data?, regiao? }
-    const mapaTPPlanilha = new Map<string, { tag: string; dataISO: string | null; regiao: string | null }>();
-    // Lista de linhas ÚNICAS da planilha (por primeiro telefone canônico)
-    // usada para contar TPs que existem NA PLANILHA mas NÃO no Supabase
-    type LinhaTPPlanilha = { telCanonico: string; variacoes: string[]; tag: string; dataISO: string | null; regiao: string | null };
-    const linhasPlanilhaTP: LinhaTPPlanilha[] = [];
-    const telsCanonicosVistos = new Set<string>(); // dedup por 1ª variação
-    try {
-      // Cache busting: força Google Sheets a servir versão fresca do CSV.
-      // Sem isso, edições recentes na planilha podem demorar 5-15min pra refletir.
-      // O cb muda a cada minuto (granularidade fina o bastante pra leituras humanas,
-      // mas não tão fina que perca cache edge completamente).
-      const cb = Math.floor(Date.now() / 60_000);
-      const planilhaUrl = `${PLANILHA_TP_URL}&cachebust=${cb}`;
-      const resp = await fetch(planilhaUrl, {
-        headers: {
-          Accept: 'text/csv',
-          'Cache-Control': 'no-cache',
-          'Pragma': 'no-cache',
-        },
-        signal: AbortSignal.timeout(8000),
-        cache: 'no-store', // não cacheia no layer do Next.js/Vercel
-      });
-      if (resp.ok) {
-        const csv = (await resp.text()).replace(/^\uFEFF/, '');
-        const linhas = csv.split('\n');
-        if (linhas.length >= 2) {
-          const headers = parseCsvLinha(linhas[0]).map(h =>
-            h.replace(/^\uFEFF/, '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
-          );
-          // Detectar nome da coluna de data (tentativas comuns)
-          const colData = headers.findIndex(h =>
-            h === 'data' || h === 'data cadastro' || h === 'data_cadastro' || h === 'created' ||
-            h === 'created at' || h === 'data lead' || h === 'dt' || h === 'cadastro'
-          );
-          const colPhone = headers.findIndex(h => h === 'phone' || h === 'telefone');
-          const colTp    = headers.findIndex(h => h === 'tp');
-          // Coluna de região/estado/cidade (opcional)
-          const colRegiao = headers.findIndex(h =>
-            h === 'estado ou cidade' || h === 'estado' || h === 'cidade' || h === 'regiao' || h === 'região'
-          );
-
-          console.log(`[Analytics] Planilha TP: headers=${JSON.stringify(headers)} | colData=${colData} colPhone=${colPhone} colTp=${colTp} colRegiao=${colRegiao}`);
-
-          for (let i = 1; i < linhas.length; i++) {
-            if (!linhas[i].trim()) continue;
-            const vals = parseCsvLinha(linhas[i]);
-            const tel = colPhone >= 0 ? vals[colPhone] : '';
-            const tp  = colTp    >= 0 ? vals[colTp]    : '';
-            const dataRaw = colData >= 0 ? vals[colData] : '';
-            const regiaoRaw = colRegiao >= 0 ? vals[colRegiao] : '';
-            if (!tel || !tp || !/^TP/i.test(tp)) continue;
-
-            // Converter data BR (DD/MM/YYYY) ou ISO (YYYY-MM-DD) para ISO
-            let dataISO: string | null = null;
-            if (dataRaw) {
-              const m = dataRaw.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})/);
-              if (m) {
-                const ano = m[3].length === 2 ? '20' + m[3] : m[3];
-                dataISO = `${ano}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}`;
-              } else if (/^\d{4}-\d{2}-\d{2}/.test(dataRaw)) {
-                dataISO = dataRaw.slice(0, 10);
-              }
-            }
-
-            const variacoes = gerarVariacoesTel(tel);
-            const telCanonico = variacoes[0] || normalizarTel(tel);
-
-            // Adiciona ao mapa (todas variações)
-            for (const v of variacoes) {
-              if (!mapaTPPlanilha.has(v)) {
-                mapaTPPlanilha.set(v, { tag: tp.trim(), dataISO, regiao: regiaoRaw || null });
-              }
-            }
-
-            // Adiciona à lista deduplicada (1 entrada por telefone), guardando
-            // todas as variações para permitir match com o CRM depois
-            if (telCanonico && !telsCanonicosVistos.has(telCanonico)) {
-              telsCanonicosVistos.add(telCanonico);
-              linhasPlanilhaTP.push({ telCanonico, variacoes, tag: tp.trim(), dataISO, regiao: regiaoRaw || null });
-            }
-          }
-          console.log(`[Analytics] Planilha TP: ${mapaTPPlanilha.size} variações de telefone mapeadas | ${linhasPlanilhaTP.length} registros únicos`);
-        }
-      } else {
-        console.log(`[Analytics] Planilha TP HTTP ${resp.status}`);
-      }
-    } catch (e: any) {
-      console.log(`[Analytics] Planilha TP falhou (usando só banco): ${e.message}`);
-    }
-
-    // ═══════════════════════════════════════════════════════════════════════
-    // TP = 100% da planilha no período.
-    // - "Leads com Tag TP" = linhas da planilha com `data` no período (dedup por tel)
-    // - "TP com Cadastro"  = desses, quantos tem telefone batendo com um lead
-    //                        no Supabase que já tem cod_profissional
-    // - "TP Ativados"      = desses com cadastro, cod_profissional ∈ codsAtivosSet
-    // - "TP por Região"    = agrupado pela coluna "estado ou cidade" da planilha
-    // NADA de buscar no Supabase pra contagem do total. A planilha é a verdade.
-    // ═══════════════════════════════════════════════════════════════════════
-
-    // ═══════════════════════════════════════════════════════════════════════
-    // FUNIL TP — todos os cruzamentos respeitam o filtro de período:
-    //
-    // - "Leads com Tag TP" = linhas da planilha com `data` no período
-    // - "TP Cadastrados"   = desses, cujo TELEFONE bate com crm_leads_capturados
-    //                         E cuja data_cadastro está no período
-    // - "TP Ativados"      = dos cadastrados, cuja data_ativacao está no período
-    //                         E status_api = 'ativo'
-    // - "TP em Operação"   = dos ativados, com entrega em bi_entregas no período
-    //
-    // Cruzamento por TELEFONE (normalizado com variações). A aba "Cadastros"
-    // do CRM lê crm_leads_capturados, que tem todos os motoboys cadastrados
-    // na Mapp — é a fonte de verdade para "cadastrado/ativado".
-    // ═══════════════════════════════════════════════════════════════════════
-
-    // 1. Linhas da planilha no período
-    const linhasPlanilhaTPPeriodo = linhasPlanilhaTP.filter(r => {
-      if (!r.dataISO) return false;
-      return r.dataISO >= dataInicioStr && r.dataISO <= dataFimStr;
-    });
-
-    // Respeita filtro de região (case-insensitive, substring)
-    const linhasPlanilhaFiltradas = regiao
-      ? linhasPlanilhaTPPeriodo.filter(r => (r.regiao || '').toLowerCase().includes(regiao.toLowerCase()))
-      : linhasPlanilhaTPPeriodo;
-
-    // 2. Índice Telefone → Cadastro em crm_leads_capturados
-    //    Cada registro traz: cod, telefone (raw), data_cadastro, data_ativacao, status_api
-    //    Construímos um índice por TODAS as variações do telefone para match robusto.
-    type CadastroIndex = {
-      cod: string;
-      telefone: string | null;
-      data_cadastro: string | null;
-      data_ativacao: string | null;
-      status_api: string | null;
-    };
-    const indiceTelCadastro = new Map<string, CadastroIndex>();
-    let leadsComTelefoneIndexados = 0;
-    const amostrasTelefoneBanco: string[] = [];
-    for (const lead of todosLeads) {
-      const tel = lead.telefone || lead.celular || '';
-      if (!tel) continue;
-      leadsComTelefoneIndexados++;
-      if (amostrasTelefoneBanco.length < 5) amostrasTelefoneBanco.push(String(tel));
-      const snap: CadastroIndex = {
-        cod: String(lead.cod),
-        telefone: tel,
-        data_cadastro: lead.data_cadastro || null,
-        data_ativacao: lead.data_ativacao || null,
-        status_api: lead.status_api || null,
-      };
-      for (const v of gerarVariacoesTel(tel)) {
-        if (!indiceTelCadastro.has(v)) indiceTelCadastro.set(v, snap);
-      }
-    }
-    console.log(
-      `[Analytics] TP índice Cadastros: ${leadsComTelefoneIndexados} leads com telefone | ` +
-      `${indiceTelCadastro.size} variações indexadas | ` +
-      `amostras (raw): ${JSON.stringify(amostrasTelefoneBanco)}`
-    );
-
-    // Amostras de telefones da planilha (debug)
-    const amostrasPlanilha = linhasPlanilhaFiltradas.slice(0, 5).map(r => ({
-      telCanonico: r.telCanonico,
-      variacoes: r.variacoes,
-    }));
-    console.log(`[Analytics] TP amostras planilha (primeiras 5): ${JSON.stringify(amostrasPlanilha)}`);
-
-    // 3. Para cada linha TP da planilha, tenta casar com cadastro (por telefone).
-    //    Depois aplica cascata do funil (cadastro/ativação no período).
-    type TPItem = {
-      telCanonico: string;
-      regiao: string | null;
-      cadastro: CadastroIndex | null; // null se não existe em crm_leads_capturados
-    };
-    const dentroDoPeriodo = (dataStr: string | null): boolean => {
-      if (!dataStr) return false;
-      const d = dataStr.split('T')[0];
-      return d >= dataInicioStr && d <= dataFimStr;
-    };
-
-    const itensTP: TPItem[] = linhasPlanilhaFiltradas.map(r => {
-      let cadastro: CadastroIndex | null = null;
-      for (const v of (r.variacoes || [r.telCanonico])) {
-        const m = indiceTelCadastro.get(v);
-        if (m) {
-          cadastro = m;
-          break;
-        }
-      }
-      return { telCanonico: r.telCanonico, regiao: r.regiao || null, cadastro };
-    });
-
-    // Funil TP — cascata com filtros de período
-    const itensTPComCad = itensTP.filter(i =>
-      i.cadastro && dentroDoPeriodo(i.cadastro.data_cadastro)
-    );
-    const itensTPAtivados = itensTPComCad.filter(i =>
-      i.cadastro!.status_api === 'ativo' && dentroDoPeriodo(i.cadastro!.data_ativacao)
-    );
-
-    // Diagnóstico: quantos TPs deram match em QUALQUER data (ignorando período)
-    const tpComMatchGlobal = itensTP.filter(i => i.cadastro).length;
-    console.log(
-      `[Analytics] TP funil: planilhaPeriodo=${linhasPlanilhaFiltradas.length} | ` +
-      `matchCadastros_qualquerData=${tpComMatchGlobal} | ` +
-      `cadastradosNoPeriodo=${itensTPComCad.length} | ` +
-      `ativadosNoPeriodo=${itensTPAtivados.length}`
-    );
-
-    // Valores expostos (nomes que o restante do código usa)
-    const leadsComTP         = { length: itensTP.length };
-    const leadsTPComCadastro = { length: itensTPComCad.length };
-    const leadsTPAtivados    = itensTPAtivados.map(i => ({
-      cod_profissional: i.cadastro!.cod, // compatibilidade com o bloco BI
-    }));
-
-    // TP por região — agrupa pela coluna da planilha (não pelo CRM)
-    const tpPorRegiao: Record<string, number> = {};
-    itensTP.forEach(item => {
-      const reg = (item.regiao && String(item.regiao).trim()) || 'SEM REGIÃO';
-      const key = reg.toUpperCase();
-      tpPorRegiao[key] = (tpPorRegiao[key] || 0) + 1;
-    });
-
-    // Mortos/ressuscitados removidos do analytics conforme solicitação
-    // (conceitos seguem existindo no kanban, cron de enriquecimento e types)
-
-    const leadsCrmPorDia: Record<string, number> = {};
-    Object.keys(cadastrosPorDia).forEach(k => { leadsCrmPorDia[k] = 0; });
-    leadsCrmNoPeriodo.forEach(l => { if (l.created_at) { const dia = l.created_at.split('T')[0]; if (leadsCrmPorDia[dia] !== undefined) leadsCrmPorDia[dia]++; } });
-
-    // ═══ 3. BI ═══ (agora passa data_inicio/data_fim pra respeitar filtro do período)
-    let emOperacao = 0;
-    let tpEmOperacao = 0;
-    let codsEmOperacaoSet = new Set<string>();
-    try {
-      const codigosAtivos = leadsPorAtivacao.map((l: any) => String(l.cod)).filter(Boolean);
-      if (codigosAtivos.length > 0) {
-        const biResult = await fetch(`${BI_API_URL}/api/crm/verificar-operacao`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', ...(CRM_SERVICE_KEY ? { 'x-service-key': CRM_SERVICE_KEY } : {}) },
-          // Intervalo fixo: conta entregas dentro do período selecionado no filtro
-          body: JSON.stringify({ codigos: codigosAtivos, data_inicio: dataInicioStr, data_fim: dataFimStr }),
-        }).then(r => r.json()).catch(() => null);
-
-        emOperacao = biResult?.em_operacao ?? 0;
-
-        if (biResult?.resultado) {
-          codsEmOperacaoSet = new Set(biResult.resultado.filter((r: any) => r.em_operacao).map((r: any) => String(r.cod_profissional)));
-          const codsTPAtivados = new Set<string>(leadsTPAtivados.map((l: any) => String(l.cod_profissional)));
-          tpEmOperacao = Array.from(codsTPAtivados).filter((c: string) => codsEmOperacaoSet.has(c)).length;
-        }
-      }
-    } catch (err: any) { console.error('[Analytics] Erro BI:', err.message); }
-
-    // ═══ 4. ALOCAÇÕES (mesmo período) ═══
-    // FIX: antes tinha `importado=false`, o que excluía todas as alocações
-    // importadas da Google Sheet — o KPI só contava alocações criadas pela UI.
-    // Agora conta TODAS (manuais + importadas) para bater com a realidade.
-    let totalAlocados = 0;
-    let alocacoesPorOperador: Record<string, number> = {};
-    try {
-      const alocResp = await fetch(`${BI_API_URL}/api/crm/alocacao?limit=50000&todos=true`, {
-        headers: { 'Content-Type': 'application/json', ...(CRM_SERVICE_KEY ? { 'x-service-key': CRM_SERVICE_KEY } : {}) },
-      }).then(r => r.json()).catch(() => ({ success: false, data: [] }));
-
-      const todasAlocacoes: any[] = alocResp?.data || [];
-
-      // Filtrar alocações pelo período — usa created_at (quando foi alocado no CRM)
-      const alocacoesPeriodo = todasAlocacoes.filter((a: any) => {
-        if (!a.created_at) return false;
-        const d = a.created_at.split('T')[0];
-        if (d < dataInicioStr || d > dataFimStr) return false;
-        // Se veio filtro de região, respeita (buscar via lead correspondente é
-        // caro; por enquanto o endpoint de alocação não retorna região, então
-        // filtro de região NÃO é aplicado nas alocações — comportamento anterior).
-        return true;
-      });
-
-      totalAlocados = alocacoesPeriodo.length;
-
-      // Agrupar por quem_alocou
-      alocacoesPeriodo.forEach((a: any) => {
-        const op = a.quem_alocou || 'N/I';
-        alocacoesPorOperador[op] = (alocacoesPorOperador[op] || 0) + 1;
-      });
-
-      console.log(`[Analytics] Alocações período (todas, manuais+importadas): ${totalAlocados} de ${todasAlocacoes.length} total`);
-    } catch (err: any) { console.error('[Analytics] Erro alocações:', err.message); }
-
-    // ═══ RESPOSTA ═══
-    const naoAtivados = totalCadastros - totalAtivos;
-    const taxaConversao = totalCadastros > 0 ? Math.round((totalAtivos / totalCadastros) * 100) : 0;
-    // Em Operação % baseado nos ATIVADOS (não no total)
-    const taxaOperacao = totalAtivos > 0 ? Math.round((emOperacao / totalAtivos) * 100) : 0;
-
-    return NextResponse.json({
-      success: true,
-      data: {
-        kpis: { totalCadastros, totalAtivos, totalAlocados, totalInativos, naoAtivados, emOperacao, naoOperando: totalAtivos - emOperacao, taxaConversao, taxaOperacao },
-        funil: [
-          // FIX: todas as etapas agora são comparadas contra Total Cadastros
-          // (antes: Alocados/Em Operação comparavam contra Ativados, dando %
-          // baixas que não faziam sentido como "funil de conversão completo")
-          { stage: 'Total Cadastros', quantidade: totalCadastros, cor: '#6366F1', base: totalCadastros },
-          { stage: 'Ativados', quantidade: totalAtivos, cor: '#22C55E', base: totalCadastros },
-          { stage: 'Alocados', quantidade: totalAlocados, cor: '#8B5CF6', base: totalCadastros },
-          { stage: 'Em Operação', quantidade: emOperacao, cor: '#3B82F6', base: totalCadastros },
-        ],
-        funilTP: [
-          // Total vem 100% da planilha no período
-          { stage: 'Leads com Tag TP', quantidade: leadsComTP.length, cor: '#8B5CF6', base: leadsComTP.length || 1 },
-          // Etapas seguintes: cruzamento com CRM por telefone
-          { stage: 'TP com Cadastro', quantidade: leadsTPComCadastro.length, cor: '#F59E0B', base: leadsComTP.length || 1 },
-          { stage: 'TP Ativados',     quantidade: leadsTPAtivados.length,    cor: '#22C55E', base: leadsTPComCadastro.length || 1 },
-          { stage: 'TP em Operação',  quantidade: tpEmOperacao,               cor: '#10B981', base: leadsTPAtivados.length || 1 },
-        ],
-        conversaoOperacao: { leadsAtivados: totalAtivos, emOperacao, naoOperando: totalAtivos - emOperacao, taxaReal: taxaOperacao },
-        porRegiao: Object.entries(ativadosPorRegiao).map(([r, q]) => ({ regiao: r, quantidade: q })).sort((a, b) => b.quantidade - a.quantidade),
-        naoAtivadosPorRegiao: Object.entries(naoAtivadosPorRegiao).map(([r, q]) => ({ regiao: r, quantidade: q })).sort((a, b) => b.quantidade - a.quantidade),
-        tpPorRegiao: Object.entries(tpPorRegiao).map(([r, q]) => ({ regiao: r, quantidade: q })).sort((a, b) => b.quantidade - a.quantidade),
-        porOperador: Object.entries(ativacoesPorOperador).map(([o, q]) => ({ operador: o, quantidade: q })).sort((a, b) => b.quantidade - a.quantidade),
-        porOperadorAlocacao: Object.entries(alocacoesPorOperador).map(([o, q]) => ({ operador: o, quantidade: q })).sort((a, b) => b.quantidade - a.quantidade),
-        porDia: Object.keys(cadastrosPorDia).map(data => ({ data, cadastros: cadastrosPorDia[data], leadsCrm: leadsCrmPorDia[data] || 0 })),
-        filtros: { dataInicio: dataInicioStr, dataFim: dataFimStr, regiao: regiao || 'Todas' },
-      },
-    });
-  } catch (error: any) {
-    console.error('Erro analytics:', error);
-    return NextResponse.json({ error: error.message, success: false }, { status: 500 });
-  }
+function InfoTooltip({ text }: { text: string }) {
+  const [show, setShow] = useState(false);
+  return (
+    <span className="relative inline-flex ml-1">
+      <span onMouseEnter={() => setShow(true)} onMouseLeave={() => setShow(false)}
+        className="cursor-help text-gray-400 hover:text-gray-600"><Info className="w-3.5 h-3.5" /></span>
+      {show && (
+        <span className="absolute z-50 bottom-full left-1/2 -translate-x-1/2 mb-2 w-64 p-2.5 rounded-lg bg-gray-900 text-white text-xs leading-relaxed shadow-xl pointer-events-none">
+          {text}<span className="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-gray-900" />
+        </span>
+      )}
+    </span>
+  );
 }
+
+interface AnalyticsData {
+  kpis: { totalCadastros: number; totalAtivos: number; totalAlocados: number; totalInativos: number; naoAtivados: number; emOperacao: number; naoOperando: number; taxaConversao: number; taxaOperacao: number };
+  funil: Array<{ stage: string; quantidade: number; cor: string; base: number }>;
+  funilTP: Array<{ stage: string; quantidade: number; cor: string; base: number }>;
+  conversaoOperacao: { leadsAtivados: number; emOperacao: number; naoOperando: number; taxaReal: number };
+  porRegiao: Array<{ regiao: string; quantidade: number }>;
+  naoAtivadosPorRegiao: Array<{ regiao: string; quantidade: number }>;
+  tpPorRegiao: Array<{ regiao: string; quantidade: number }>;
+  porOperador: Array<{ operador: string; quantidade: number }>;
+  porOperadorAlocacao: Array<{ operador: string; quantidade: number }>;
+  porDia: Array<{ data: string; cadastros: number; leadsCrm: number }>;
+  filtros: { dataInicio: string; dataFim: string; regiao: string };
+}
+
+// ═══ Drilldown Modal ═══
+type LeadRow = {
+  cod: string | null;
+  nome: string | null;
+  telefone: string | null;
+  regiao: string | null;
+  data_cadastro: string | null;
+  data_ativacao: string | null;
+  data_lead: string | null;
+  status_api: string | null;
+  em_operacao: boolean;
+  total_entregas: number | null;
+  ultima_entrega: string | null;
+  quem_ativou: string | null;
+  quem_alocou: string | null;
+  tags: string[];
+  origem: string | null;
+};
+
+function formatDate(d: string | null): string {
+  if (!d) return '';
+  const s = String(d).split('T')[0];
+  const [y, m, dia] = s.split('-');
+  if (!y || !m || !dia) return s;
+  return `${dia}/${m}/${y}`;
+}
+
+function DrilldownModal({
+  open, onClose, funil, stage, filtros,
+}: {
+  open: boolean;
+  onClose: () => void;
+  funil: 'conversao' | 'tp';
+  stage: string;
+  filtros: { dataInicio: string; dataFim: string; regiao: string };
+}) {
+  const [loading, setLoading] = useState(false);
+  const [erro, setErro] = useState<string | null>(null);
+  const [leads, setLeads] = useState<LeadRow[]>([]);
+  const [busca, setBusca] = useState('');
+
+  useEffect(() => {
+    if (!open) return;
+    let cancelado = false;
+    setLoading(true); setErro(null); setLeads([]); setBusca('');
+    fetch('/api/analytics/drilldown', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ funil, stage, dataInicio: filtros.dataInicio, dataFim: filtros.dataFim, regiao: filtros.regiao || undefined }),
+    })
+      .then(r => r.ok ? r.json() : r.json().then(j => { throw new Error(j.error || 'Erro ao carregar'); }))
+      .then(data => { if (!cancelado) setLeads(data.leads || []); })
+      .catch(e => { if (!cancelado) setErro(e.message); })
+      .finally(() => { if (!cancelado) setLoading(false); });
+    return () => { cancelado = true; };
+  }, [open, funil, stage, filtros.dataInicio, filtros.dataFim, filtros.regiao]);
+
+  // Fecha com ESC
+  useEffect(() => {
+    if (!open) return;
+    const onEsc = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onEsc);
+    return () => window.removeEventListener('keydown', onEsc);
+  }, [open, onClose]);
+
+  if (!open) return null;
+
+  const buscaLower = busca.trim().toLowerCase();
+  const filtrados = buscaLower
+    ? leads.filter(l =>
+        (l.nome || '').toLowerCase().includes(buscaLower) ||
+        (l.telefone || '').toLowerCase().includes(buscaLower) ||
+        (l.regiao || '').toLowerCase().includes(buscaLower) ||
+        (l.cod || '').toLowerCase().includes(buscaLower) ||
+        (l.quem_ativou || '').toLowerCase().includes(buscaLower) ||
+        (l.tags || []).some(t => t.toLowerCase().includes(buscaLower))
+      )
+    : leads;
+
+  const exportarCSV = () => {
+    const cols = [
+      'Código', 'Nome', 'Telefone', 'Região', 'Data Cadastro', 'Data Ativação',
+      'Data Lead (TP)', 'Status API', 'Em Operação', 'Total Entregas', 'Última Entrega',
+      'Quem Ativou', 'Quem Alocou', 'Tags', 'Origem',
+    ];
+    const escapeCsv = (v: any): string => {
+      if (v === null || v === undefined) return '';
+      const s = String(v);
+      if (/[",\n;]/.test(s)) return '"' + s.replace(/"/g, '""') + '"';
+      return s;
+    };
+    const linhas = [
+      cols.join(';'),
+      ...filtrados.map(l => [
+        l.cod, l.nome, l.telefone, l.regiao,
+        formatDate(l.data_cadastro), formatDate(l.data_ativacao), formatDate(l.data_lead),
+        l.status_api, l.em_operacao ? 'Sim' : 'Não', l.total_entregas ?? '',
+        formatDate(l.ultima_entrega), l.quem_ativou, l.quem_alocou,
+        (l.tags || []).join(', '), l.origem,
+      ].map(escapeCsv).join(';')),
+    ].join('\n');
+    // BOM pra Excel reconhecer UTF-8
+    const blob = new Blob(['\uFEFF' + linhas], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    const slug = stage.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+    a.download = `drilldown-${slug}-${filtros.dataInicio}-a-${filtros.dataFim}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  return (
+    <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/50" onClick={onClose}>
+      <div className="bg-white rounded-xl shadow-2xl w-full max-w-[95vw] max-h-[90vh] flex flex-col" onClick={e => e.stopPropagation()}>
+        {/* Header */}
+        <div className="flex items-center justify-between px-5 py-4 border-b border-gray-200">
+          <div>
+            <h2 className="text-lg font-bold text-gray-800">{stage}</h2>
+            <p className="text-xs text-gray-500">
+              {filtros.dataInicio} a {filtros.dataFim}
+              {filtros.regiao ? ` • ${filtros.regiao}` : ''}
+              {!loading && ` • ${filtrados.length} de ${leads.length}`}
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            <button onClick={exportarCSV} disabled={loading || leads.length === 0}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-sm bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:bg-gray-300 disabled:cursor-not-allowed">
+              <Download className="w-4 h-4" /> CSV
+            </button>
+            <button onClick={onClose} className="p-1.5 hover:bg-gray-100 rounded-lg">
+              <X className="w-5 h-5 text-gray-600" />
+            </button>
+          </div>
+        </div>
+
+        {/* Busca */}
+        {!loading && leads.length > 0 && (
+          <div className="px-5 py-3 border-b border-gray-200">
+            <div className="relative">
+              <Search className="w-4 h-4 text-gray-400 absolute left-3 top-1/2 -translate-y-1/2" />
+              <input type="text" placeholder="Buscar por nome, telefone, região, código..."
+                value={busca} onChange={e => setBusca(e.target.value)}
+                className="w-full pl-9 pr-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500" />
+            </div>
+          </div>
+        )}
+
+        {/* Body */}
+        <div className="flex-1 overflow-auto">
+          {loading && (
+            <div className="flex items-center justify-center py-16">
+              <Loader2 className="w-8 h-8 text-purple-500 animate-spin" />
+            </div>
+          )}
+          {erro && (
+            <div className="p-6 flex items-center gap-2 text-red-600">
+              <AlertCircle className="w-5 h-5" /> {erro}
+            </div>
+          )}
+          {!loading && !erro && filtrados.length === 0 && (
+            <div className="p-16 text-center text-gray-400">
+              {leads.length === 0 ? 'Nenhum lead encontrado nesta etapa.' : 'Nenhum resultado para a busca.'}
+            </div>
+          )}
+          {!loading && !erro && filtrados.length > 0 && (
+            <table className="w-full text-sm">
+              <thead className="bg-gray-50 sticky top-0">
+                <tr>
+                  <th className="px-3 py-2 text-left font-semibold text-gray-600 text-xs">Código</th>
+                  <th className="px-3 py-2 text-left font-semibold text-gray-600 text-xs">Nome</th>
+                  <th className="px-3 py-2 text-left font-semibold text-gray-600 text-xs">Telefone</th>
+                  <th className="px-3 py-2 text-left font-semibold text-gray-600 text-xs">Região</th>
+                  <th className="px-3 py-2 text-left font-semibold text-gray-600 text-xs">Cadastro</th>
+                  <th className="px-3 py-2 text-left font-semibold text-gray-600 text-xs">Ativação</th>
+                  <th className="px-3 py-2 text-left font-semibold text-gray-600 text-xs">Data Lead TP</th>
+                  <th className="px-3 py-2 text-left font-semibold text-gray-600 text-xs">Status</th>
+                  <th className="px-3 py-2 text-left font-semibold text-gray-600 text-xs">Operação</th>
+                  <th className="px-3 py-2 text-left font-semibold text-gray-600 text-xs">Entregas</th>
+                  <th className="px-3 py-2 text-left font-semibold text-gray-600 text-xs">Última Entrega</th>
+                  <th className="px-3 py-2 text-left font-semibold text-gray-600 text-xs">Ativou</th>
+                  <th className="px-3 py-2 text-left font-semibold text-gray-600 text-xs">Alocou</th>
+                  <th className="px-3 py-2 text-left font-semibold text-gray-600 text-xs">Tags</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filtrados.map((l, i) => (
+                  <tr key={i} className={i % 2 === 0 ? 'bg-white' : 'bg-gray-50'}>
+                    <td className="px-3 py-2 text-gray-700 tabular-nums">{l.cod || '—'}</td>
+                    <td className="px-3 py-2 text-gray-700">{l.nome || '—'}</td>
+                    <td className="px-3 py-2 text-gray-700 tabular-nums">{l.telefone || '—'}</td>
+                    <td className="px-3 py-2 text-gray-700">{l.regiao || '—'}</td>
+                    <td className="px-3 py-2 text-gray-700 tabular-nums">{formatDate(l.data_cadastro) || '—'}</td>
+                    <td className="px-3 py-2 text-gray-700 tabular-nums">{formatDate(l.data_ativacao) || '—'}</td>
+                    <td className="px-3 py-2 text-gray-700 tabular-nums">{formatDate(l.data_lead) || '—'}</td>
+                    <td className="px-3 py-2">
+                      {l.status_api === 'ativo' ? (
+                        <span className="px-1.5 py-0.5 text-xs rounded bg-green-100 text-green-700">ativo</span>
+                      ) : l.status_api ? (
+                        <span className="px-1.5 py-0.5 text-xs rounded bg-gray-100 text-gray-600">{l.status_api}</span>
+                      ) : '—'}
+                    </td>
+                    <td className="px-3 py-2">
+                      {l.em_operacao ? (
+                        <span className="px-1.5 py-0.5 text-xs rounded bg-blue-100 text-blue-700">operando</span>
+                      ) : '—'}
+                    </td>
+                    <td className="px-3 py-2 text-gray-700 tabular-nums">{l.total_entregas ?? '—'}</td>
+                    <td className="px-3 py-2 text-gray-700 tabular-nums">{formatDate(l.ultima_entrega) || '—'}</td>
+                    <td className="px-3 py-2 text-gray-700">{l.quem_ativou || '—'}</td>
+                    <td className="px-3 py-2 text-gray-700">{l.quem_alocou || '—'}</td>
+                    <td className="px-3 py-2 text-gray-700">
+                      {(l.tags || []).map((t, j) => (
+                        <span key={j} className="inline-block px-1.5 py-0.5 mr-1 mb-0.5 text-xs rounded bg-purple-100 text-purple-700">{t}</span>
+                      ))}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function FunnelBar({
+  items, maxVal, funil, filtros,
+}: {
+  items: Array<{ stage: string; quantidade: number; cor: string; base: number }>;
+  maxVal: number;
+  funil: 'conversao' | 'tp';
+  filtros: { dataInicio: string; dataFim: string; regiao: string };
+}) {
+  const [modalOpen, setModalOpen] = useState(false);
+  const [stageAberto, setStageAberto] = useState('');
+
+  return (
+    <>
+      <div className="space-y-4">
+        {items.map((item, i) => {
+          const widthPct = maxVal > 0 ? Math.round((item.quantidade / maxVal) * 100) : 0;
+          const labelPct = item.base > 0 ? Math.round((item.quantidade / item.base) * 100) : 0;
+          return (
+            <div key={i}>
+              <div className="flex justify-between items-center mb-1">
+                <span className="text-sm font-medium text-gray-700 flex items-center">
+                  {item.stage}
+                  <InfoTooltip text={`${item.quantidade.toLocaleString()} de ${item.base.toLocaleString()} (${labelPct}%)`} />
+                  <button
+                    onClick={() => { setStageAberto(item.stage); setModalOpen(true); }}
+                    className="ml-2 p-0.5 rounded hover:bg-purple-100 text-purple-600 hover:text-purple-700 transition-colors"
+                    title={`Ver ${item.quantidade.toLocaleString()} leads de "${item.stage}"`}
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                  </button>
+                </span>
+                <span className="text-sm font-bold text-gray-800">{item.quantidade.toLocaleString()}</span>
+              </div>
+              <div className="w-full bg-gray-100 rounded-full h-7 overflow-hidden">
+                <div className="h-full rounded-full flex items-center justify-center text-white text-xs font-bold transition-all duration-700"
+                  style={{ width: `${Math.max(widthPct, 3)}%`, backgroundColor: item.cor }}>{labelPct}%</div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      <DrilldownModal
+        open={modalOpen}
+        onClose={() => setModalOpen(false)}
+        funil={funil}
+        stage={stageAberto}
+        filtros={filtros}
+      />
+    </>
+  );
+}
+
+const COLORS = ['#6366F1', '#22C55E', '#F59E0B', '#EF4444', '#EC4899', '#8B5CF6', '#3B82F6', '#14B8A6', '#F97316', '#06B6D4', '#84CC16', '#A855F7', '#D946EF', '#0EA5E9', '#10B981'];
+
+function RegionBars({ items, colors }: { items: Array<{ regiao: string; quantidade: number }>; colors: string[] }) {
+  const maxR = items[0]?.quantidade || 1;
+  return (
+    <div
+      className="space-y-3 max-h-[450px] overflow-y-auto pr-6"
+      style={{ scrollbarGutter: 'stable' }}
+    >
+      {items.map((item, i) => {
+        const widthPct = Math.max((item.quantidade / maxR) * 100, 3);
+        return (
+          <div key={item.regiao}>
+            <div className="flex items-center justify-between gap-3 mb-1">
+              <div className="flex items-center gap-2 min-w-0 flex-1">
+                <span className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ backgroundColor: colors[i % colors.length] }} />
+                <span className="text-sm text-gray-700 truncate font-medium" title={item.regiao}>{item.regiao}</span>
+              </div>
+              <span className="text-sm font-bold text-gray-800 tabular-nums flex-shrink-0 whitespace-nowrap">
+                {item.quantidade.toLocaleString()}
+              </span>
+            </div>
+            <div className="w-full h-2 bg-gray-100 rounded-full overflow-hidden">
+              <div className="h-full rounded-full transition-all duration-500" style={{ width: `${widthPct}%`, backgroundColor: colors[i % colors.length] }} />
+            </div>
+          </div>
+        );
+      })}
+      {items.length === 0 && <p className="text-gray-400 text-center py-8">Sem dados no período</p>}
+    </div>
+  );
+}
+
+// ═══ Chart with state-based tooltip ═══
+function ChartDia({ porDia }: { porDia: Array<{ data: string; cadastros: number; leadsCrm: number }> }) {
+  const [tip, setTip] = useState<{ x: number; y: number; d: typeof porDia[0] } | null>(null);
+  const chartRef = useRef<HTMLDivElement>(null);
+  const CHART_H = 300;
+  const maxDia = Math.max(...porDia.map(d => d.cadastros + d.leadsCrm), 1);
+
+  return (
+    <div className="card p-6" ref={chartRef}>
+      <h3 className="text-lg font-bold text-gray-800 flex items-center gap-2 mb-1"><Calendar className="w-5 h-5 text-teal-600" /> Cadastros por Dia</h3>
+      <div className="flex items-center gap-5 mb-6 text-xs text-gray-500">
+        <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded-sm bg-teal-500 inline-block" /> Cadastros (Mapp)</span>
+        <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded-sm bg-purple-500 inline-block" /> Leads CRM</span>
+      </div>
+
+      {/* Tooltip portal */}
+      {tip && (
+        <div style={{ position: 'fixed', left: tip.x, top: tip.y, transform: 'translate(-50%, -100%)', zIndex: 9999, pointerEvents: 'none' }}>
+          <div style={{ background: '#111827', color: '#fff', fontSize: '12px', borderRadius: '8px', padding: '8px 12px', boxShadow: '0 4px 12px rgba(0,0,0,0.3)', whiteSpace: 'nowrap' }}>
+            <div style={{ fontWeight: 700 }}>{tip.d.data.split('-')[2]}/{tip.d.data.split('-')[1]}</div>
+            <div>Cadastros: <span style={{ color: '#2DD4BF', fontWeight: 700 }}>{tip.d.cadastros}</span></div>
+            <div>CRM: <span style={{ color: '#C084FC', fontWeight: 700 }}>{tip.d.leadsCrm}</span></div>
+            <div style={{ borderTop: '1px solid #374151', marginTop: 4, paddingTop: 4, fontWeight: 700 }}>Total: {tip.d.cadastros + tip.d.leadsCrm}</div>
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'center' }}><span style={{ width: 0, height: 0, borderLeft: '6px solid transparent', borderRight: '6px solid transparent', borderTop: '6px solid #111827' }} /></div>
+        </div>
+      )}
+
+      <div className="overflow-x-auto">
+        <div className="flex items-end gap-1 pb-8" style={{ height: `${CHART_H + 60}px`, minWidth: `${porDia.length * 36}px` }}>
+          {porDia.map((item, idx) => {
+            const total = item.cadastros + item.leadsCrm;
+            const barH = maxDia > 0 ? Math.round((total / maxDia) * CHART_H) : 0;
+            const cadastroH = total > 0 ? Math.round((item.cadastros / total) * barH) : 0;
+            const crmH = barH - cadastroH;
+            const dia = item.data.split('-')[2];
+            const mes = item.data.split('-')[1];
+
+            return (
+              <div key={item.data} className="flex flex-col items-center flex-1 min-w-[30px] cursor-pointer"
+                onMouseEnter={(e) => {
+                  const rect = e.currentTarget.getBoundingClientRect();
+                  setTip({ x: rect.left + rect.width / 2, y: rect.top - 8, d: item });
+                }}
+                onMouseMove={(e) => {
+                  const rect = e.currentTarget.getBoundingClientRect();
+                  setTip({ x: rect.left + rect.width / 2, y: rect.top - 8, d: item });
+                }}
+                onMouseLeave={() => setTip(null)}>
+                {total > 0 && <span className="text-[11px] font-semibold text-gray-600 mb-1">{total}</span>}
+                <div className="w-full flex flex-col justify-end rounded-t-md overflow-hidden" style={{ height: `${Math.max(barH, 2)}px` }}>
+                  {cadastroH > 0 && <div className="w-full bg-teal-500 hover:bg-teal-400 transition-colors" style={{ height: `${cadastroH}px` }} />}
+                  {crmH > 0 && <div className="w-full bg-purple-500 hover:bg-purple-400 transition-colors" style={{ height: `${crmH}px` }} />}
+                  {total === 0 && <div className="w-full bg-gray-200" style={{ height: '2px' }} />}
+                </div>
+                <span className="text-[10px] text-gray-400 mt-2">{dia}/{mes}</span>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function AnalyticsContent() {
+  const [data, setData] = useState<AnalyticsData | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [dataInicio, setDataInicio] = useState(() => { const h = new Date(); return `${h.getFullYear()}-${String(h.getMonth() + 1).padStart(2, '0')}-01`; });
+  const [dataFim, setDataFim] = useState(() => { const h = new Date(); const u = new Date(h.getFullYear(), h.getMonth() + 1, 0).getDate(); return `${h.getFullYear()}-${String(h.getMonth() + 1).padStart(2, '0')}-${String(u).padStart(2, '0')}`; });
+  const [regiao, setRegiao] = useState('');
+  const [regioes, setRegioes] = useState<string[]>([]);
+  const { fetchApi } = useApi();
+
+  const carregar = useCallback(async () => {
+    setIsLoading(true); setError(null);
+    const p = new URLSearchParams(); p.set('dataInicio', dataInicio); p.set('dataFim', dataFim);
+    if (regiao) p.set('regiao', regiao);
+    const { data: resp, error: err } = await fetchApi(`/api/analytics?${p}`);
+    if (err) { setError(err); } else if (resp?.success) {
+      setData(resp.data);
+      const regs = new Set<string>();
+      resp.data.porRegiao?.forEach((r: any) => regs.add(r.regiao));
+      resp.data.naoAtivadosPorRegiao?.forEach((r: any) => regs.add(r.regiao));
+      resp.data.tpPorRegiao?.forEach((r: any) => regs.add(r.regiao));
+      setRegioes(Array.from(regs).sort());
+    }
+    setIsLoading(false);
+  }, [fetchApi, dataInicio, dataFim, regiao]);
+
+  useEffect(() => { carregar(); }, [dataInicio, dataFim, regiao]);
+
+  if (isLoading) return <div className="flex items-center justify-center py-32"><Loader2 className="w-10 h-10 animate-spin text-purple-500" /></div>;
+  if (error) return <div className="p-6 bg-red-50 rounded-lg text-red-700 flex items-center gap-2"><AlertCircle className="w-5 h-5" /> {error}</div>;
+  if (!data) return null;
+
+  const { kpis, funil, funilTP, conversaoOperacao, porRegiao, naoAtivadosPorRegiao, tpPorRegiao, porOperador, porOperadorAlocacao, porDia } = data;
+
+  return (
+    <div className="p-4 md:p-6 max-w-[1600px] mx-auto space-y-6">
+      <div className="flex flex-col lg:flex-row justify-between items-start lg:items-center gap-4">
+        <div><h1 className="text-2xl font-bold text-gray-800 flex items-center gap-2"><BarChart3 className="w-7 h-7 text-purple-600" /> Analytics</h1><p className="text-sm text-gray-500">Métricas e indicadores do CRM</p></div>
+        <div className="flex items-center gap-3 flex-wrap">
+          <Calendar className="w-4 h-4 text-gray-400" />
+          <input type="date" value={dataInicio} onChange={e => setDataInicio(e.target.value)} className="px-3 py-2 border border-gray-300 rounded-lg text-sm" />
+          <span className="text-gray-400">até</span>
+          <input type="date" value={dataFim} onChange={e => setDataFim(e.target.value)} className="px-3 py-2 border border-gray-300 rounded-lg text-sm" />
+          <select value={regiao} onChange={e => setRegiao(e.target.value)} className="px-3 py-2 border border-gray-300 rounded-lg text-sm">
+            <option value="">Todas as regiões</option>
+            {regioes.map(r => <option key={r} value={r}>{r}</option>)}
+          </select>
+          <button onClick={carregar} className="flex items-center gap-2 px-4 py-2 bg-purple-600 text-white rounded-lg text-sm hover:bg-purple-700"><RefreshCw className="w-4 h-4" /> Atualizar</button>
+        </div>
+      </div>
+
+      {/* KPIs — Mortos/Ressuscitados removidos a pedido */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <div className="card p-5"><div className="flex items-center gap-3"><div className="w-12 h-12 bg-purple-100 rounded-xl flex items-center justify-center"><Users className="w-6 h-6 text-purple-600" /></div><div><p className="text-3xl font-bold text-purple-600">{kpis.totalCadastros.toLocaleString()}</p><p className="text-xs text-gray-500">Total Cadastros</p><p className="text-xs text-gray-400 mt-0.5">Não ativados: {kpis.naoAtivados}</p></div></div></div>
+        <div className="card p-5"><div className="flex items-center gap-3"><div className="w-12 h-12 bg-green-100 rounded-xl flex items-center justify-center"><UserCheck className="w-6 h-6 text-green-600" /></div><div><p className="text-3xl font-bold text-green-600">{kpis.totalAtivos.toLocaleString()}</p><p className="text-xs text-gray-500">Ativados</p><p className="text-xs text-green-500 mt-0.5">{kpis.taxaConversao}% conversão</p></div></div></div>
+        <div className="card p-5"><div className="flex items-center gap-3"><div className="w-12 h-12 bg-violet-100 rounded-xl flex items-center justify-center"><UserPlus className="w-6 h-6 text-violet-600" /></div><div><p className="text-3xl font-bold text-violet-600">{kpis.totalAlocados?.toLocaleString() || 0}</p><p className="text-xs text-gray-500">Alocados</p></div></div></div>
+        <div className="card p-5"><div className="flex items-center gap-3"><div className="w-12 h-12 bg-blue-100 rounded-xl flex items-center justify-center"><Truck className="w-6 h-6 text-blue-600" /></div><div><p className="text-3xl font-bold text-blue-600">{kpis.emOperacao}</p><p className="text-xs text-gray-500">Em Operação</p><p className="text-xs text-blue-500 mt-0.5">{kpis.taxaOperacao}% taxa real</p></div></div></div>
+      </div>
+
+      {/* Conversão em Operação */}
+      <div className="card p-5 bg-green-50 border border-green-200">
+        <h3 className="text-lg font-bold text-gray-800 flex items-center gap-2 mb-4"><TrendingUp className="w-5 h-5 text-green-600" /> Conversão em Operação <span className="text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full">BI Tutts</span></h3>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          <div className="bg-white rounded-xl p-4 border"><p className="text-2xl font-bold">{conversaoOperacao.leadsAtivados}</p><p className="text-xs text-gray-500">Leads Ativados</p></div>
+          <div className="bg-white rounded-xl p-4 border"><p className="text-2xl font-bold text-green-600">{conversaoOperacao.emOperacao}</p><p className="text-xs text-green-600">Fazendo entregas</p></div>
+          <div className="bg-white rounded-xl p-4 border"><p className="text-2xl font-bold text-red-500">{conversaoOperacao.naoOperando}</p><p className="text-xs text-red-500">Sem entregas</p></div>
+          <div className="bg-white rounded-xl p-4 border"><p className="text-2xl font-bold text-blue-600">{conversaoOperacao.taxaReal}%</p><p className="text-xs text-gray-500">Conversão efetiva</p></div>
+        </div>
+        <div className="mt-4 flex items-center gap-2"><span className="text-xs text-gray-500">Taxa</span><div className="flex-1 h-4 bg-red-200 rounded-full overflow-hidden"><div className="h-full bg-green-500 rounded-full" style={{ width: `${conversaoOperacao.taxaReal}%` }} /></div><span className="text-xs font-bold text-green-600">{conversaoOperacao.taxaReal}%</span></div>
+      </div>
+
+      {/* Funis */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <div className="card p-5"><h3 className="text-lg font-bold text-gray-800 flex items-center gap-2 mb-4"><TrendingUp className="w-5 h-5 text-indigo-600" /> Funil de Conversão</h3><FunnelBar items={funil} maxVal={funil[0]?.quantidade || 1} funil="conversao" filtros={{ dataInicio, dataFim, regiao }} /></div>
+        <div className="card p-5"><h3 className="text-lg font-bold text-gray-800 flex items-center gap-2 mb-4"><Tag className="w-5 h-5 text-purple-600" /> Funil Tráfego Pago</h3><FunnelBar items={funilTP} maxVal={funilTP[0]?.quantidade || 1} funil="tp" filtros={{ dataInicio, dataFim, regiao }} /></div>
+      </div>
+
+      {/* Regiões */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <div className="card p-5"><h3 className="text-lg font-bold text-gray-800 flex items-center gap-2 mb-4"><MapPin className="w-5 h-5 text-green-600" /> Ativados por Região <span className="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded-full">{porRegiao.reduce((s, r) => s + r.quantidade, 0)} total</span></h3><RegionBars items={porRegiao} colors={COLORS} /></div>
+        <div className="card p-5"><h3 className="text-lg font-bold text-gray-800 flex items-center gap-2 mb-4"><Tag className="w-5 h-5 text-purple-600" /> TP por Região <span className="text-xs bg-purple-100 text-purple-700 px-2 py-0.5 rounded-full">{tpPorRegiao.reduce((s, r) => s + r.quantidade, 0)} total</span></h3><RegionBars items={tpPorRegiao} colors={COLORS} /></div>
+      </div>
+
+      {/* Operadores */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <div className="card p-5">
+          <h3 className="text-lg font-bold text-gray-800 flex items-center gap-2 mb-4"><Zap className="w-5 h-5 text-green-600" /> Ativações por Operador</h3>
+          <div className="space-y-3 max-h-96 overflow-y-auto">
+            {porOperador.map((item, i) => { const maxO = porOperador[0]?.quantidade || 1; return (
+              <div key={item.operador}><div className="flex justify-between items-center mb-1"><span className="text-sm font-medium text-gray-700">{i + 1}. {item.operador}</span><span className="text-sm font-bold">{item.quantidade}</span></div>
+                <div className="w-full bg-gray-100 rounded-full h-6 overflow-hidden"><div className="h-full rounded-full" style={{ width: `${(item.quantidade / maxO) * 100}%`, backgroundColor: COLORS[i % COLORS.length] }} /></div></div>
+            ); })}
+            {porOperador.length === 0 && <p className="text-gray-400 text-center py-8">Sem dados</p>}
+          </div>
+        </div>
+        <div className="card p-5">
+          <h3 className="text-lg font-bold text-gray-800 flex items-center gap-2 mb-4"><UserPlus className="w-5 h-5 text-violet-600" /> Alocações por Operador</h3>
+          <div className="space-y-3 max-h-96 overflow-y-auto">
+            {(porOperadorAlocacao || []).map((item, i) => { const maxO = (porOperadorAlocacao || [])[0]?.quantidade || 1; return (
+              <div key={item.operador}><div className="flex justify-between items-center mb-1"><span className="text-sm font-medium text-gray-700">{i + 1}. {item.operador}</span><span className="text-sm font-bold">{item.quantidade}</span></div>
+                <div className="w-full bg-gray-100 rounded-full h-6 overflow-hidden"><div className="h-full rounded-full" style={{ width: `${(item.quantidade / maxO) * 100}%`, backgroundColor: ['#8B5CF6','#7C3AED','#6D28D9','#5B21B6','#4C1D95'][i % 5] }} /></div></div>
+            ); })}
+            {(!porOperadorAlocacao || porOperadorAlocacao.length === 0) && <p className="text-gray-400 text-center py-8">Sem dados</p>}
+          </div>
+        </div>
+      </div>
+
+      {/* Não Ativados por Região */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <div className="card p-5">
+          <h3 className="text-lg font-bold text-gray-800 flex items-center gap-2 mb-4"><XCircle className="w-5 h-5 text-orange-500" /> Não Ativados por Região <span className="text-xs bg-orange-100 text-orange-700 px-2 py-0.5 rounded-full">{naoAtivadosPorRegiao.reduce((s, r) => s + r.quantidade, 0)} total</span></h3>
+          <div className="grid grid-cols-2 md:grid-cols-3 gap-2 max-h-96 overflow-y-auto">
+            {naoAtivadosPorRegiao.map(item => (<div key={item.regiao} className="bg-orange-50 rounded-lg p-3 text-center border border-orange-100"><p className="text-lg font-bold text-orange-600">{item.quantidade}</p><p className="text-xs text-gray-500 truncate">{item.regiao}</p></div>))}
+            {naoAtivadosPorRegiao.length === 0 && <p className="col-span-full text-gray-400 text-center py-8">Sem dados</p>}
+          </div>
+        </div>
+      </div>
+
+      {/* Gráfico */}
+      <ChartDia porDia={porDia} />
+    </div>
+  );
+}
+
+export default function AnalyticsPage() { return (<AuthLayout><AnalyticsContent /></AuthLayout>); }
