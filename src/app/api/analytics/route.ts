@@ -297,6 +297,21 @@ export async function GET(req: NextRequest) {
     // NADA de buscar no Supabase pra contagem do total. A planilha é a verdade.
     // ═══════════════════════════════════════════════════════════════════════
 
+    // ═══════════════════════════════════════════════════════════════════════
+    // FUNIL TP — todos os cruzamentos respeitam o filtro de período:
+    //
+    // - "Leads com Tag TP" = linhas da planilha com `data` no período
+    // - "TP Cadastrados"   = desses, cujo TELEFONE bate com crm_leads_capturados
+    //                         E cuja data_cadastro está no período
+    // - "TP Ativados"      = dos cadastrados, cuja data_ativacao está no período
+    //                         E status_api = 'ativo'
+    // - "TP em Operação"   = dos ativados, com entrega em bi_entregas no período
+    //
+    // Cruzamento por TELEFONE (normalizado com variações). A aba "Cadastros"
+    // do CRM lê crm_leads_capturados, que tem todos os motoboys cadastrados
+    // na Mapp — é a fonte de verdade para "cadastrado/ativado".
+    // ═══════════════════════════════════════════════════════════════════════
+
     // 1. Linhas da planilha no período
     const linhasPlanilhaTPPeriodo = linhasPlanilhaTP.filter(r => {
       if (!r.dataISO) return false;
@@ -308,70 +323,96 @@ export async function GET(req: NextRequest) {
       ? linhasPlanilhaTPPeriodo.filter(r => (r.regiao || '').toLowerCase().includes(regiao.toLowerCase()))
       : linhasPlanilhaTPPeriodo;
 
-    // 2. Índice Telefone → Lead do CRM para enriquecer as etapas seguintes
-    //    (só precisamos de leads com cod_profissional)
-    const indiceTelefoneLead = new Map<string, any>();
+    // 2. Índice Telefone → Cadastro em crm_leads_capturados
+    //    Cada registro traz: cod, telefone (raw), data_cadastro, data_ativacao, status_api
+    //    Construímos um índice por TODAS as variações do telefone para match robusto.
+    type CadastroIndex = {
+      cod: string;
+      telefone: string | null;
+      data_cadastro: string | null;
+      data_ativacao: string | null;
+      status_api: string | null;
+    };
+    const indiceTelCadastro = new Map<string, CadastroIndex>();
+    let leadsComTelefoneIndexados = 0;
     const amostrasTelefoneBanco: string[] = [];
-    let leadsComCodProfissional = 0;
-    for (const lead of (allLeads || [])) {
-      if (!lead.telefone || !lead.cod_profissional) continue;
-      leadsComCodProfissional++;
-      if (amostrasTelefoneBanco.length < 5) amostrasTelefoneBanco.push(String(lead.telefone));
-      for (const v of gerarVariacoesTel(lead.telefone)) {
-        if (!indiceTelefoneLead.has(v)) indiceTelefoneLead.set(v, lead);
+    for (const lead of todosLeads) {
+      const tel = lead.telefone || lead.celular || '';
+      if (!tel) continue;
+      leadsComTelefoneIndexados++;
+      if (amostrasTelefoneBanco.length < 5) amostrasTelefoneBanco.push(String(tel));
+      const snap: CadastroIndex = {
+        cod: String(lead.cod),
+        telefone: tel,
+        data_cadastro: lead.data_cadastro || null,
+        data_ativacao: lead.data_ativacao || null,
+        status_api: lead.status_api || null,
+      };
+      for (const v of gerarVariacoesTel(tel)) {
+        if (!indiceTelCadastro.has(v)) indiceTelCadastro.set(v, snap);
       }
     }
-
     console.log(
-      `[Analytics] TP índice CRM: ${leadsComCodProfissional} leads com cod_profissional | ` +
-      `${indiceTelefoneLead.size} chaves telefone indexadas | ` +
-      `amostras banco (raw): ${JSON.stringify(amostrasTelefoneBanco)}`
+      `[Analytics] TP índice Cadastros: ${leadsComTelefoneIndexados} leads com telefone | ` +
+      `${indiceTelCadastro.size} variações indexadas | ` +
+      `amostras (raw): ${JSON.stringify(amostrasTelefoneBanco)}`
     );
 
-    // Amostras de telefones da planilha para comparar formato
-    const amostrasTelefonePlanilha = linhasPlanilhaFiltradas.slice(0, 5).map(r => ({
+    // Amostras de telefones da planilha (debug)
+    const amostrasPlanilha = linhasPlanilhaFiltradas.slice(0, 5).map(r => ({
       telCanonico: r.telCanonico,
       variacoes: r.variacoes,
     }));
-    console.log(`[Analytics] TP amostras planilha (primeiras 5): ${JSON.stringify(amostrasTelefonePlanilha)}`);
+    console.log(`[Analytics] TP amostras planilha (primeiras 5): ${JSON.stringify(amostrasPlanilha)}`);
 
-    // 3. Para cada linha da planilha no período, tenta casar com um lead do CRM
-    //    que tenha cod_profissional. Depois aplica funil.
+    // 3. Para cada linha TP da planilha, tenta casar com cadastro (por telefone).
+    //    Depois aplica cascata do funil (cadastro/ativação no período).
     type TPItem = {
       telCanonico: string;
       regiao: string | null;
-      cod_profissional: string | null; // null se não bateu com nenhum lead cadastrado
+      cadastro: CadastroIndex | null; // null se não existe em crm_leads_capturados
     };
-    let matchesEncontrados = 0;
+    const dentroDoPeriodo = (dataStr: string | null): boolean => {
+      if (!dataStr) return false;
+      const d = dataStr.split('T')[0];
+      return d >= dataInicioStr && d <= dataFimStr;
+    };
+
     const itensTP: TPItem[] = linhasPlanilhaFiltradas.map(r => {
-      let cod: string | null = null;
+      let cadastro: CadastroIndex | null = null;
       for (const v of (r.variacoes || [r.telCanonico])) {
-        const lead = indiceTelefoneLead.get(v);
-        if (lead?.cod_profissional) {
-          cod = String(lead.cod_profissional);
-          matchesEncontrados++;
+        const m = indiceTelCadastro.get(v);
+        if (m) {
+          cadastro = m;
           break;
         }
       }
-      return { telCanonico: r.telCanonico, regiao: r.regiao || null, cod_profissional: cod };
+      return { telCanonico: r.telCanonico, regiao: r.regiao || null, cadastro };
     });
-    console.log(`[Analytics] TP matches (planilha↔CRM): ${matchesEncontrados} de ${linhasPlanilhaFiltradas.length} linhas da planilha no período`);
 
-    // Funil TP — valores
-    const totalTP           = itensTP.length;
-    const itensTPComCad     = itensTP.filter(i => i.cod_profissional);
-    const itensTPAtivados   = itensTPComCad.filter(i => codsAtivosSet.has(i.cod_profissional!));
-
-    // Valores expostos (mesmos nomes das variáveis antigas para não quebrar o resto do código)
-    const leadsComTP         = { length: totalTP };
-    const leadsTPComCadastro = { length: itensTPComCad.length };
-    const leadsTPAtivados    = itensTPAtivados; // array usado pelo bloco BI abaixo
-
-    console.log(
-      `[Analytics] TP (direto da planilha): planilhaTotal=${linhasPlanilhaTP.length} | ` +
-      `noPeriodo=${linhasPlanilhaTPPeriodo.length} | pósRegiao=${linhasPlanilhaFiltradas.length} | ` +
-      `comCadastro=${itensTPComCad.length} | ativados=${itensTPAtivados.length}`
+    // Funil TP — cascata com filtros de período
+    const itensTPComCad = itensTP.filter(i =>
+      i.cadastro && dentroDoPeriodo(i.cadastro.data_cadastro)
     );
+    const itensTPAtivados = itensTPComCad.filter(i =>
+      i.cadastro!.status_api === 'ativo' && dentroDoPeriodo(i.cadastro!.data_ativacao)
+    );
+
+    // Diagnóstico: quantos TPs deram match em QUALQUER data (ignorando período)
+    const tpComMatchGlobal = itensTP.filter(i => i.cadastro).length;
+    console.log(
+      `[Analytics] TP funil: planilhaPeriodo=${linhasPlanilhaFiltradas.length} | ` +
+      `matchCadastros_qualquerData=${tpComMatchGlobal} | ` +
+      `cadastradosNoPeriodo=${itensTPComCad.length} | ` +
+      `ativadosNoPeriodo=${itensTPAtivados.length}`
+    );
+
+    // Valores expostos (nomes que o restante do código usa)
+    const leadsComTP         = { length: itensTP.length };
+    const leadsTPComCadastro = { length: itensTPComCad.length };
+    const leadsTPAtivados    = itensTPAtivados.map(i => ({
+      cod_profissional: i.cadastro!.cod, // compatibilidade com o bloco BI
+    }));
 
     // TP por região — agrupa pela coluna da planilha (não pelo CRM)
     const tpPorRegiao: Record<string, number> = {};
@@ -388,7 +429,7 @@ export async function GET(req: NextRequest) {
     Object.keys(cadastrosPorDia).forEach(k => { leadsCrmPorDia[k] = 0; });
     leadsCrmNoPeriodo.forEach(l => { if (l.created_at) { const dia = l.created_at.split('T')[0]; if (leadsCrmPorDia[dia] !== undefined) leadsCrmPorDia[dia]++; } });
 
-    // ═══ 3. BI ═══
+    // ═══ 3. BI ═══ (agora passa data_inicio/data_fim pra respeitar filtro do período)
     let emOperacao = 0;
     let tpEmOperacao = 0;
     let codsEmOperacaoSet = new Set<string>();
@@ -398,7 +439,8 @@ export async function GET(req: NextRequest) {
         const biResult = await fetch(`${BI_API_URL}/api/crm/verificar-operacao`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', ...(CRM_SERVICE_KEY ? { 'x-service-key': CRM_SERVICE_KEY } : {}) },
-          body: JSON.stringify({ codigos: codigosAtivos, dias: 30 }),
+          // Intervalo fixo: conta entregas dentro do período selecionado no filtro
+          body: JSON.stringify({ codigos: codigosAtivos, data_inicio: dataInicioStr, data_fim: dataFimStr }),
         }).then(r => r.json()).catch(() => null);
 
         emOperacao = biResult?.em_operacao ?? 0;
