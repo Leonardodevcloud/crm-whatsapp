@@ -65,17 +65,22 @@ const COLORS = ['#6366F1', '#22C55E', '#F59E0B', '#EF4444', '#EC4899', '#8B5CF6'
 function RegionBars({ items, colors }: { items: Array<{ regiao: string; quantidade: number }>; colors: string[] }) {
   const maxR = items[0]?.quantidade || 1;
   return (
-    <div className="space-y-3 max-h-[450px] overflow-y-auto pr-2">
+    <div
+      className="space-y-3 max-h-[450px] overflow-y-auto pr-6"
+      style={{ scrollbarGutter: 'stable' }}
+    >
       {items.map((item, i) => {
         const widthPct = Math.max((item.quantidade / maxR) * 100, 3);
         return (
           <div key={item.regiao}>
-            <div className="flex items-center justify-between gap-2 mb-1">
+            <div className="flex items-center justify-between gap-3 mb-1">
               <div className="flex items-center gap-2 min-w-0 flex-1">
                 <span className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ backgroundColor: colors[i % colors.length] }} />
                 <span className="text-sm text-gray-700 truncate font-medium" title={item.regiao}>{item.regiao}</span>
               </div>
-              <span className="text-sm font-bold text-gray-800 tabular-nums flex-shrink-0">{item.quantidade.toLocaleString()}</span>
+              <span className="text-sm font-bold text-gray-800 tabular-nums flex-shrink-0 whitespace-nowrap">
+                {item.quantidade.toLocaleString()}
+              </span>
             </div>
             <div className="w-full h-2 bg-gray-100 rounded-full overflow-hidden">
               <div className="h-full rounded-full transition-all duration-500" style={{ width: `${widthPct}%`, backgroundColor: colors[i % colors.length] }} />
