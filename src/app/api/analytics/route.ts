@@ -273,91 +273,78 @@ export async function GET(req: NextRequest) {
       console.log(`[Analytics] Planilha TP falhou (usando só banco): ${e.message}`);
     }
 
-    // ─── TP no período: UNIÃO (CRM no período ∪ planilha no período) ────────
-    // Definição: "Leads TP do mês" = leads do CRM cadastrados no período que
-    // são TP + linhas da planilha TP cuja `data` está no período.
-    // Deduplicação por telefone canônico — se o mesmo telefone aparece no CRM
-    // e na planilha, conta UMA vez.
-    const temTPBanco = (lead: any): boolean =>
-      parseTags(lead.tags).some(t => /^TP/i.test(t));
+    // ═══════════════════════════════════════════════════════════════════════
+    // TP = 100% da planilha no período.
+    // - "Leads com Tag TP" = linhas da planilha com `data` no período (dedup por tel)
+    // - "TP com Cadastro"  = desses, quantos tem telefone batendo com um lead
+    //                        no Supabase que já tem cod_profissional
+    // - "TP Ativados"      = desses com cadastro, cod_profissional ∈ codsAtivosSet
+    // - "TP por Região"    = agrupado pela coluna "estado ou cidade" da planilha
+    // NADA de buscar no Supabase pra contagem do total. A planilha é a verdade.
+    // ═══════════════════════════════════════════════════════════════════════
 
-    // PRIMEIRO: filtrar linhas da planilha para só o período + filtro de região.
-    // Linhas sem data são DESCARTADAS (não podemos saber se são do período —
-    // antes essas linhas viravam false-positives em leads mais novos).
+    // 1. Linhas da planilha no período
     const linhasPlanilhaTPPeriodo = linhasPlanilhaTP.filter(r => {
       if (!r.dataISO) return false;
       return r.dataISO >= dataInicioStr && r.dataISO <= dataFimStr;
     });
 
+    // Respeita filtro de região (case-insensitive, substring)
     const linhasPlanilhaFiltradas = regiao
       ? linhasPlanilhaTPPeriodo.filter(r => (r.regiao || '').toLowerCase().includes(regiao.toLowerCase()))
       : linhasPlanilhaTPPeriodo;
 
-    // Set de telefones canônicos SÓ DAS LINHAS DA PLANILHA NO PERÍODO.
-    // Guarda TODAS as variações de cada telefone da planilha no período, para
-    // que um lead do CRM com variação diferente ainda consiga dar match.
-    const telsPlanilhaNoPeriodo = new Set<string>();
-    for (const r of linhasPlanilhaFiltradas) {
-      for (const v of (r.variacoes || [r.telCanonico])) {
-        telsPlanilhaNoPeriodo.add(v);
+    // 2. Índice Telefone → Lead do CRM para enriquecer as etapas seguintes
+    //    (só precisamos de leads com cod_profissional)
+    const indiceTelefoneLead = new Map<string, any>();
+    for (const lead of (allLeads || [])) {
+      if (!lead.telefone || !lead.cod_profissional) continue;
+      for (const v of gerarVariacoesTel(lead.telefone)) {
+        if (!indiceTelefoneLead.has(v)) indiceTelefoneLead.set(v, lead);
       }
     }
 
-    const temTPPlanilha = (lead: any): boolean => {
-      if (!lead.telefone) return false;
-      const variacoes = gerarVariacoesTel(lead.telefone);
-      // Match apenas com linhas da planilha NO PERÍODO (não na planilha inteira)
-      return variacoes.some(v => telsPlanilhaNoPeriodo.has(v));
+    // 3. Para cada linha da planilha no período, tenta casar com um lead do CRM
+    //    que tenha cod_profissional. Depois aplica funil.
+    type TPItem = {
+      telCanonico: string;
+      regiao: string | null;
+      cod_profissional: string | null; // null se não bateu com nenhum lead cadastrado
     };
+    const itensTP: TPItem[] = linhasPlanilhaFiltradas.map(r => {
+      let cod: string | null = null;
+      for (const v of (r.variacoes || [r.telCanonico])) {
+        const lead = indiceTelefoneLead.get(v);
+        if (lead?.cod_profissional) {
+          cod = String(lead.cod_profissional);
+          break;
+        }
+      }
+      return { telCanonico: r.telCanonico, regiao: r.regiao || null, cod_profissional: cod };
+    });
 
-    // Helper: pega o telefone canônico do lead (1ª variação)
-    const telCanonicoLead = (lead: any): string => {
-      if (!lead.telefone) return `lead:${lead.id}`;
-      const v = gerarVariacoesTel(lead.telefone);
-      return v[0] || `lead:${lead.id}`;
-    };
+    // Funil TP — valores
+    const totalTP           = itensTP.length;
+    const itensTPComCad     = itensTP.filter(i => i.cod_profissional);
+    const itensTPAtivados   = itensTPComCad.filter(i => codsAtivosSet.has(i.cod_profissional!));
 
-    // 1. Leads TP do CRM no período (created_at em [dataInicio, dataFim])
-    const leadsCrmTP = leadsCrmNoPeriodo.filter(l => temTPBanco(l) || temTPPlanilha(l));
+    // Valores expostos (mesmos nomes das variáveis antigas para não quebrar o resto do código)
+    const leadsComTP         = { length: totalTP };
+    const leadsTPComCadastro = { length: itensTPComCad.length };
+    const leadsTPAtivados    = itensTPAtivados; // array usado pelo bloco BI abaixo
 
-    // 2. Dedup por telefone canônico: se o telefone da planilha já veio pelo
-    //    CRM (leadsCrmTP), não conta de novo. Só entram na união os telefones
-    //    da planilha que NÃO estão representados no CRM no período.
-    const telsCRMPeriodo = new Set(leadsCrmTP.map(telCanonicoLead));
-    const linhasPlanilhaNovas = linhasPlanilhaFiltradas.filter(r =>
-      r.telCanonico && !telsCRMPeriodo.has(r.telCanonico)
-    );
-
-    // Total unificado
-    const totalTPUniao = leadsCrmTP.length + linhasPlanilhaNovas.length;
-
-    // "leadsComTP" agora é um array híbrido (usado só para regiões abaixo)
-    type TPItem = { origem: 'crm' | 'planilha'; regiao: string | null; cod_profissional?: string | null };
-    const leadsComTP: TPItem[] = [
-      ...leadsCrmTP.map((l): TPItem => ({ origem: 'crm', regiao: l.regiao || null, cod_profissional: l.cod_profissional || null })),
-      ...linhasPlanilhaNovas.map((r): TPItem => ({ origem: 'planilha', regiao: r.regiao || null, cod_profissional: null })),
-    ];
-
-    // TP com cadastro / ativados / em operação: só faz sentido para leads do CRM
-    // (linhas só-planilha não tem cod_profissional para cruzar)
-    const leadsTPComCadastro = leadsCrmTP.filter(l => l.cod_profissional);
-    const leadsTPAtivados    = leadsTPComCadastro.filter(l => codsAtivosSet.has(String(l.cod_profissional)));
-
-    // Logs de debug
-    const tpSoBanco    = leadsCrmNoPeriodo.filter(l => temTPBanco(l) && !temTPPlanilha(l)).length;
-    const tpSoPlanilha = leadsCrmNoPeriodo.filter(l => !temTPBanco(l) && temTPPlanilha(l)).length;
-    const tpAmbos      = leadsCrmNoPeriodo.filter(l => temTPBanco(l) &&  temTPPlanilha(l)).length;
     console.log(
-      `[Analytics] TP período: CRM=${leadsCrmTP.length} (banco=${tpSoBanco}+planilha=${tpSoPlanilha}+ambos=${tpAmbos}) | ` +
-      `PlanilhaPeriodo=${linhasPlanilhaFiltradas.length} | ` +
-      `Novas_da_planilha(não no CRM)=${linhasPlanilhaNovas.length} | ` +
-      `TOTAL_UNIÃO=${totalTPUniao}`
+      `[Analytics] TP (direto da planilha): planilhaTotal=${linhasPlanilhaTP.length} | ` +
+      `noPeriodo=${linhasPlanilhaTPPeriodo.length} | pósRegiao=${linhasPlanilhaFiltradas.length} | ` +
+      `comCadastro=${itensTPComCad.length} | ativados=${itensTPAtivados.length}`
     );
 
+    // TP por região — agrupa pela coluna da planilha (não pelo CRM)
     const tpPorRegiao: Record<string, number> = {};
-    leadsComTP.forEach(item => {
+    itensTP.forEach(item => {
       const reg = (item.regiao && String(item.regiao).trim()) || 'SEM REGIÃO';
-      tpPorRegiao[reg.toUpperCase()] = (tpPorRegiao[reg.toUpperCase()] || 0) + 1;
+      const key = reg.toUpperCase();
+      tpPorRegiao[key] = (tpPorRegiao[key] || 0) + 1;
     });
 
     // Mortos/ressuscitados removidos do analytics conforme solicitação
@@ -445,11 +432,10 @@ export async function GET(req: NextRequest) {
           { stage: 'Em Operação', quantidade: emOperacao, cor: '#3B82F6', base: totalCadastros },
         ],
         funilTP: [
-          // Total TP = CRM no período + linhas da planilha no período (dedup por tel)
-          { stage: 'Leads com Tag TP', quantidade: leadsComTP.length, cor: '#8B5CF6', base: leadsComTP.length },
-          // Etapas seguintes só fazem sentido para leads do CRM (linhas só-planilha
-          // não têm cod_profissional). Base = total TP do CRM (leadsCrmTP).
-          { stage: 'TP com Cadastro', quantidade: leadsTPComCadastro.length, cor: '#F59E0B', base: leadsCrmTP.length || 1 },
+          // Total vem 100% da planilha no período
+          { stage: 'Leads com Tag TP', quantidade: leadsComTP.length, cor: '#8B5CF6', base: leadsComTP.length || 1 },
+          // Etapas seguintes: cruzamento com CRM por telefone
+          { stage: 'TP com Cadastro', quantidade: leadsTPComCadastro.length, cor: '#F59E0B', base: leadsComTP.length || 1 },
           { stage: 'TP Ativados',     quantidade: leadsTPAtivados.length,    cor: '#22C55E', base: leadsTPComCadastro.length || 1 },
           { stage: 'TP em Operação',  quantidade: tpEmOperacao,               cor: '#10B981', base: leadsTPAtivados.length || 1 },
         ],
