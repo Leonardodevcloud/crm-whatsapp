@@ -27,6 +27,8 @@ interface AnalyticsData {
   kpis: { totalCadastros: number; totalAtivos: number; totalAlocados: number; totalInativos: number; naoAtivados: number; emOperacao: number; naoOperando: number; taxaConversao: number; taxaOperacao: number };
   funil: Array<{ stage: string; quantidade: number; cor: string; base: number }>;
   funilTP: Array<{ stage: string; quantidade: number; cor: string; base: number }>;
+  funilTP90d?: Array<{ stage: string; quantidade: number; cor: string; base: number }>;
+  funilTP90dMeta?: { dataInicio: string; dataFim: string; janela: string };
   conversaoOperacao: { leadsAtivados: number; emOperacao: number; naoOperando: number; taxaReal: number };
   porRegiao: Array<{ regiao: string; quantidade: number }>;
   naoAtivadosPorRegiao: Array<{ regiao: string; quantidade: number }>;
@@ -65,13 +67,14 @@ function formatDate(d: string | null): string {
 }
 
 function DrilldownModal({
-  open, onClose, funil, stage, filtros,
+  open, onClose, funil, stage, filtros, modo,
 }: {
   open: boolean;
   onClose: () => void;
   funil: 'conversao' | 'tp';
   stage: string;
   filtros: { dataInicio: string; dataFim: string; regiao: string };
+  modo?: 'atual' | '90d';
 }) {
   const [loading, setLoading] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
@@ -85,14 +88,20 @@ function DrilldownModal({
     fetch('/api/analytics/drilldown', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ funil, stage, dataInicio: filtros.dataInicio, dataFim: filtros.dataFim, regiao: filtros.regiao || undefined }),
+      body: JSON.stringify({
+        funil, stage,
+        dataInicio: filtros.dataInicio,
+        dataFim: filtros.dataFim,
+        regiao: filtros.regiao || undefined,
+        modo: modo || 'atual',
+      }),
     })
       .then(r => r.ok ? r.json() : r.json().then(j => { throw new Error(j.error || 'Erro ao carregar'); }))
       .then(data => { if (!cancelado) setLeads(data.leads || []); })
       .catch(e => { if (!cancelado) setErro(e.message); })
       .finally(() => { if (!cancelado) setLoading(false); });
     return () => { cancelado = true; };
-  }, [open, funil, stage, filtros.dataInicio, filtros.dataFim, filtros.regiao]);
+  }, [open, funil, stage, filtros.dataInicio, filtros.dataFim, filtros.regiao, modo]);
 
   // Fecha com ESC
   useEffect(() => {
@@ -265,12 +274,13 @@ function DrilldownModal({
 }
 
 function FunnelBar({
-  items, maxVal, funil, filtros,
+  items, maxVal, funil, filtros, modo,
 }: {
   items: Array<{ stage: string; quantidade: number; cor: string; base: number }>;
   maxVal: number;
   funil: 'conversao' | 'tp';
   filtros: { dataInicio: string; dataFim: string; regiao: string };
+  modo?: 'atual' | '90d';
 }) {
   const [modalOpen, setModalOpen] = useState(false);
   const [stageAberto, setStageAberto] = useState('');
@@ -312,8 +322,75 @@ function FunnelBar({
         funil={funil}
         stage={stageAberto}
         filtros={filtros}
+        modo={modo}
       />
     </>
+  );
+}
+
+// ═══ Funil TP Card — com toggle entre 2 versões ═══
+function FunilTPCard({
+  funilTP,
+  funilTP90d,
+  funilTP90dMeta,
+  filtros,
+}: {
+  funilTP: Array<{ stage: string; quantidade: number; cor: string; base: number }>;
+  funilTP90d?: Array<{ stage: string; quantidade: number; cor: string; base: number }>;
+  funilTP90dMeta?: { dataInicio: string; dataFim: string; janela: string };
+  filtros: { dataInicio: string; dataFim: string; regiao: string };
+}) {
+  const [versao, setVersao] = useState<'atual' | '90d'>('atual');
+
+  const funilAtivo = versao === 'atual' ? funilTP : (funilTP90d || funilTP);
+  const maxVal = funilAtivo[0]?.quantidade || 1;
+
+  const formatarDataBr = (d: string) => {
+    const [y, m, dia] = d.split('-');
+    return `${dia}/${m}/${y}`;
+  };
+
+  // Descrições das 2 versões (mostradas abaixo do toggle conforme o selecionado)
+  const descricoes = {
+    atual: `Usa o período e região selecionados no filtro acima. Conta apenas leads TP que cadastraram e ativaram dentro desse intervalo.`,
+    '90d': `Janela fixa dos últimos 90 dias corridos${funilTP90dMeta ? ` (${formatarDataBr(funilTP90dMeta.dataInicio)} a ${formatarDataBr(funilTP90dMeta.dataFim)})` : ''}. Ignora o filtro de data e região selecionados — mostra o panorama geral do trimestre.`,
+  };
+
+  return (
+    <div className="card p-5">
+      <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
+        <h3 className="text-lg font-bold text-gray-800 flex items-center gap-2">
+          <Tag className="w-5 h-5 text-purple-600" /> Funil Tráfego Pago
+        </h3>
+        {/* Toggle */}
+        <div className="inline-flex bg-gray-100 rounded-lg p-1 text-xs font-medium">
+          <button
+            onClick={() => setVersao('atual')}
+            className={`px-3 py-1.5 rounded-md transition-colors ${
+              versao === 'atual' ? 'bg-white text-purple-700 shadow-sm' : 'text-gray-600 hover:text-gray-800'
+            }`}
+          >
+            Filtro atual
+          </button>
+          <button
+            onClick={() => setVersao('90d')}
+            disabled={!funilTP90d}
+            className={`px-3 py-1.5 rounded-md transition-colors ${
+              versao === '90d' ? 'bg-white text-purple-700 shadow-sm' : 'text-gray-600 hover:text-gray-800'
+            } ${!funilTP90d ? 'opacity-40 cursor-not-allowed' : ''}`}
+            title={!funilTP90d ? 'Não disponível' : undefined}
+          >
+            Últimos 3 meses
+          </button>
+        </div>
+      </div>
+      {/* Descrição da versão atual */}
+      <div className="mb-4 px-3 py-2 bg-purple-50 border border-purple-100 rounded-lg text-xs text-gray-600 leading-relaxed flex items-start gap-2">
+        <Info className="w-3.5 h-3.5 text-purple-600 flex-shrink-0 mt-0.5" />
+        <span>{descricoes[versao]}</span>
+      </div>
+      <FunnelBar items={funilAtivo} maxVal={maxVal} funil="tp" filtros={filtros} modo={versao} />
+    </div>
   );
 }
 
@@ -447,7 +524,7 @@ function AnalyticsContent() {
   if (error) return <div className="p-6 bg-red-50 rounded-lg text-red-700 flex items-center gap-2"><AlertCircle className="w-5 h-5" /> {error}</div>;
   if (!data) return null;
 
-  const { kpis, funil, funilTP, conversaoOperacao, porRegiao, naoAtivadosPorRegiao, tpPorRegiao, porOperador, porOperadorAlocacao, porDia } = data;
+  const { kpis, funil, funilTP, funilTP90d, funilTP90dMeta, conversaoOperacao, porRegiao, naoAtivadosPorRegiao, tpPorRegiao, porOperador, porOperadorAlocacao, porDia } = data;
 
   return (
     <div className="p-4 md:p-6 max-w-[1600px] mx-auto space-y-6">
@@ -489,7 +566,7 @@ function AnalyticsContent() {
       {/* Funis */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <div className="card p-5"><h3 className="text-lg font-bold text-gray-800 flex items-center gap-2 mb-4"><TrendingUp className="w-5 h-5 text-indigo-600" /> Funil de Conversão</h3><FunnelBar items={funil} maxVal={funil[0]?.quantidade || 1} funil="conversao" filtros={{ dataInicio, dataFim, regiao }} /></div>
-        <div className="card p-5"><h3 className="text-lg font-bold text-gray-800 flex items-center gap-2 mb-4"><Tag className="w-5 h-5 text-purple-600" /> Funil Tráfego Pago</h3><FunnelBar items={funilTP} maxVal={funilTP[0]?.quantidade || 1} funil="tp" filtros={{ dataInicio, dataFim, regiao }} /></div>
+        <FunilTPCard funilTP={funilTP} funilTP90d={funilTP90d} funilTP90dMeta={funilTP90dMeta} filtros={{ dataInicio, dataFim, regiao }} />
       </div>
 
       {/* Regiões */}
