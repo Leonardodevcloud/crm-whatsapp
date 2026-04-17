@@ -65,17 +65,24 @@ const COLORS = ['#6366F1', '#22C55E', '#F59E0B', '#EF4444', '#EC4899', '#8B5CF6'
 function RegionBars({ items, colors }: { items: Array<{ regiao: string; quantidade: number }>; colors: string[] }) {
   const maxR = items[0]?.quantidade || 1;
   return (
-    <div className="space-y-2 max-h-[450px] overflow-y-auto pr-3">
-      {items.map((item, i) => (
-        <div key={item.regiao} className="flex items-center gap-2" title={`${item.regiao}: ${item.quantidade}`}>
-          <span className="w-3 h-3 rounded-full flex-shrink-0" style={{ backgroundColor: colors[i % colors.length] }} />
-          <span className="text-sm text-gray-700 w-32 truncate font-medium flex-shrink-0">{item.regiao}</span>
-          <div className="flex-1 min-w-0 h-6 bg-gray-100 rounded-full overflow-hidden">
-            <div className="h-full rounded-full transition-all duration-500" style={{ width: `${Math.max((item.quantidade / maxR) * 100, 3)}%`, backgroundColor: colors[i % colors.length] }} />
+    <div className="space-y-3 max-h-[450px] overflow-y-auto pr-2">
+      {items.map((item, i) => {
+        const widthPct = Math.max((item.quantidade / maxR) * 100, 3);
+        return (
+          <div key={item.regiao}>
+            <div className="flex items-center justify-between gap-2 mb-1">
+              <div className="flex items-center gap-2 min-w-0 flex-1">
+                <span className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ backgroundColor: colors[i % colors.length] }} />
+                <span className="text-sm text-gray-700 truncate font-medium" title={item.regiao}>{item.regiao}</span>
+              </div>
+              <span className="text-sm font-bold text-gray-800 tabular-nums flex-shrink-0">{item.quantidade.toLocaleString()}</span>
+            </div>
+            <div className="w-full h-2 bg-gray-100 rounded-full overflow-hidden">
+              <div className="h-full rounded-full transition-all duration-500" style={{ width: `${widthPct}%`, backgroundColor: colors[i % colors.length] }} />
+            </div>
           </div>
-          <span className="text-sm font-bold text-gray-800 w-14 text-right flex-shrink-0 tabular-nums">{item.quantidade.toLocaleString()}</span>
-        </div>
-      ))}
+        );
+      })}
       {items.length === 0 && <p className="text-gray-400 text-center py-8">Sem dados no período</p>}
     </div>
   );
