@@ -78,16 +78,17 @@ export async function GET(req: NextRequest) {
     });
 
     // Não ativados por região
-    // FIX: bater EXATO com o KPI principal (totalCadastros − totalAtivos).
-    // Antes o `if (l.regiao)` excluía leads sem região → card somava menos que o KPI.
-    // Agora leads sem região caem em "SEM REGIÃO" e o total do card === KPI.
+    // Regra única (igual ao KPI): leads cadastrados no período cujo cod NÃO está
+    // em codsAtivosSet (ativados no período). Leads sem região vão pra "SEM REGIÃO"
+    // pra soma do card bater exato com o KPI.
+    const leadsNaoAtivados = leadsPorCadastro.filter(
+      (l: any) => !codsAtivosSet.has(String(l.cod))
+    );
     const naoAtivadosPorRegiao: Record<string, number> = {};
-    leadsPorCadastro
-      .filter((l: any) => !codsAtivosSet.has(String(l.cod)))
-      .forEach((l: any) => {
-        const reg = (l.regiao && String(l.regiao).trim()) || 'SEM REGIÃO';
-        naoAtivadosPorRegiao[reg] = (naoAtivadosPorRegiao[reg] || 0) + 1;
-      });
+    leadsNaoAtivados.forEach((l: any) => {
+      const reg = (l.regiao && String(l.regiao).trim()) || 'SEM REGIÃO';
+      naoAtivadosPorRegiao[reg] = (naoAtivadosPorRegiao[reg] || 0) + 1;
+    });
 
     // Operador (ativados por data_ativacao)
     const ativacoesPorOperador: Record<string, number> = {};
@@ -549,14 +550,14 @@ export async function GET(req: NextRequest) {
 
       const todasAlocacoes: any[] = alocResp?.data || [];
 
-      // Filtrar alocações pelo período — usa created_at (quando foi alocado no CRM)
+      // Filtrar alocações pelo período — usa DATA PREVISTA (quando foi planejada
+      // a operação) com fallback pra created_at caso a alocação antiga não tenha
+      // data_prevista preenchida.
       const alocacoesPeriodo = todasAlocacoes.filter((a: any) => {
-        if (!a.created_at) return false;
-        const d = a.created_at.split('T')[0];
+        const fonte = a.data_prevista || a.created_at;
+        if (!fonte) return false;
+        const d = String(fonte).split('T')[0];
         if (d < dataInicioStr || d > dataFimStr) return false;
-        // Se veio filtro de região, respeita (buscar via lead correspondente é
-        // caro; por enquanto o endpoint de alocação não retorna região, então
-        // filtro de região NÃO é aplicado nas alocações — comportamento anterior).
         return true;
       });
 
@@ -568,12 +569,16 @@ export async function GET(req: NextRequest) {
         alocacoesPorOperador[op] = (alocacoesPorOperador[op] || 0) + 1;
       });
 
-      console.log(`[Analytics] Alocações período (todas, manuais+importadas): ${totalAlocados} de ${todasAlocacoes.length} total`);
+      console.log(`[Analytics] Alocações período (por data_prevista): ${totalAlocados} de ${todasAlocacoes.length} total`);
     } catch (err: any) { console.error('[Analytics] Erro alocações:', err.message); }
 
     // ═══ RESPOSTA ═══
-    const naoAtivados = totalCadastros - totalAtivos;
-    const taxaConversao = totalCadastros > 0 ? Math.round((totalAtivos / totalCadastros) * 100) : 0;
+    // naoAtivados = exatamente os mesmos leads do card "Não Ativados por Região".
+    // Antes era `totalCadastros − totalAtivos`, o que podia dar número diferente
+    // quando um lead cadastrado em outro período era ativado nesse mês
+    // (ele entrava em totalAtivos mas não em totalCadastros → subtração errada).
+    const naoAtivados = leadsNaoAtivados.length;
+    const taxaConversao = totalCadastros > 0 ? Math.round(((totalCadastros - naoAtivados) / totalCadastros) * 100) : 0;
     // Em Operação % baseado nos ATIVADOS (não no total)
     const taxaOperacao = totalAtivos > 0 ? Math.round((emOperacao / totalAtivos) * 100) : 0;
 
@@ -591,20 +596,20 @@ export async function GET(req: NextRequest) {
           { stage: 'Em Operação', quantidade: emOperacao, cor: '#3B82F6', base: totalCadastros },
         ],
         funilTP: [
-          // Total vem 100% da planilha no período
+          // Todas as etapas usam o topo (Leads com Tag TP) como base,
+          // mostrando a taxa de conversão em relação ao universo TOTAL de leads TP.
           { stage: 'Leads com Tag TP', quantidade: leadsComTP.length, cor: '#8B5CF6', base: leadsComTP.length || 1 },
-          // Etapas seguintes: cruzamento com CRM por telefone
           { stage: 'TP com Cadastro', quantidade: leadsTPComCadastro.length, cor: '#F59E0B', base: leadsComTP.length || 1 },
-          { stage: 'TP Ativados',     quantidade: leadsTPAtivados.length,    cor: '#22C55E', base: leadsTPComCadastro.length || 1 },
-          { stage: 'TP em Operação',  quantidade: tpEmOperacao,               cor: '#10B981', base: leadsTPAtivados.length || 1 },
+          { stage: 'TP Ativados',     quantidade: leadsTPAtivados.length,    cor: '#22C55E', base: leadsComTP.length || 1 },
+          { stage: 'TP em Operação',  quantidade: tpEmOperacao,               cor: '#10B981', base: leadsComTP.length || 1 },
         ],
         // Versão alternativa: últimos 90 dias corridos (janela fixa hoje-90d..hoje)
         // Ignora filtro de data e região selecionados pelo usuário
         funilTP90d: [
           { stage: 'Leads com Tag TP', quantidade: funil90d.totalPlanilha, cor: '#8B5CF6', base: funil90d.totalPlanilha || 1 },
           { stage: 'TP com Cadastro',  quantidade: funil90d.comCadastro,    cor: '#F59E0B', base: funil90d.totalPlanilha || 1 },
-          { stage: 'TP Ativados',      quantidade: funil90d.ativados,       cor: '#22C55E', base: funil90d.comCadastro || 1 },
-          { stage: 'TP em Operação',   quantidade: tpEmOperacao90d,          cor: '#10B981', base: funil90d.ativados || 1 },
+          { stage: 'TP Ativados',      quantidade: funil90d.ativados,       cor: '#22C55E', base: funil90d.totalPlanilha || 1 },
+          { stage: 'TP em Operação',   quantidade: tpEmOperacao90d,          cor: '#10B981', base: funil90d.totalPlanilha || 1 },
         ],
         funilTP90dMeta: {
           dataInicio: dataInicio90,
