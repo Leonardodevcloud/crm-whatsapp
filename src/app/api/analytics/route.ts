@@ -183,6 +183,20 @@ export async function GET(req: NextRequest) {
       return Array.from(variacoes);
     };
 
+    // Fingerprint de fallback: últimos 8 dígitos do número.
+    // Resolve casos esquisitos que não caem em nenhuma variação:
+    // - DDD com "0" na frente: "081..."  (0 prefixo de chamada antigo)
+    // - DDI duplo/ausente em planilha velha
+    // - Número com dígito a mais ou a menos na ponta
+    // - Import copiado com formato regional estranho
+    // Colisão teórica: 2 pessoas com últimos 8 dígitos iguais em estados diferentes.
+    // Na prática esse risco é irrelevante (chance absurda + planilha TP é pequena).
+    const fingerprint8 = (tel: string): string | null => {
+      const norm = normalizarTel(tel);
+      if (norm.length < 8) return null;
+      return norm.slice(-8);
+    };
+
     // Parse CSV básico (lida com aspas e BOM)
     const parseCsvLinha = (l: string): string[] => {
       const out: string[] = []; let cur = ''; let q = false;
@@ -324,8 +338,9 @@ export async function GET(req: NextRequest) {
       : linhasPlanilhaTPPeriodo;
 
     // 2. Índice Telefone → Cadastro em crm_leads_capturados
-    //    Cada registro traz: cod, telefone (raw), data_cadastro, data_ativacao, status_api
-    //    Construímos um índice por TODAS as variações do telefone para match robusto.
+    //    DOIS índices:
+    //    A) exato: todas as variações (DDI/9)
+    //    B) fingerprint: últimos 8 dígitos (fallback pra formatos esquisitos)
     type CadastroIndex = {
       cod: string;
       telefone: string | null;
@@ -334,6 +349,7 @@ export async function GET(req: NextRequest) {
       status_api: string | null;
     };
     const indiceTelCadastro = new Map<string, CadastroIndex>();
+    const indiceFingerprint = new Map<string, CadastroIndex[]>(); // 1 fingerprint pode ter colisões
     let leadsComTelefoneIndexados = 0;
     const amostrasTelefoneBanco: string[] = [];
     for (const lead of todosLeads) {
@@ -351,10 +367,16 @@ export async function GET(req: NextRequest) {
       for (const v of gerarVariacoesTel(tel)) {
         if (!indiceTelCadastro.has(v)) indiceTelCadastro.set(v, snap);
       }
+      const fp = fingerprint8(tel);
+      if (fp) {
+        const lista = indiceFingerprint.get(fp);
+        if (lista) lista.push(snap);
+        else indiceFingerprint.set(fp, [snap]);
+      }
     }
     console.log(
       `[Analytics] TP índice Cadastros: ${leadsComTelefoneIndexados} leads com telefone | ` +
-      `${indiceTelCadastro.size} variações indexadas | ` +
+      `${indiceTelCadastro.size} variações exatas | ${indiceFingerprint.size} fingerprints | ` +
       `amostras (raw): ${JSON.stringify(amostrasTelefoneBanco)}`
     );
 
@@ -366,11 +388,15 @@ export async function GET(req: NextRequest) {
     console.log(`[Analytics] TP amostras planilha (primeiras 5): ${JSON.stringify(amostrasPlanilha)}`);
 
     // 3. Para cada linha TP da planilha, tenta casar com cadastro (por telefone).
+    //    Ordem de tentativas:
+    //      a) Match exato por variação
+    //      b) Fallback por fingerprint (últimos 8 dígitos) — se único
     //    Depois aplica cascata do funil (cadastro/ativação no período).
     type TPItem = {
       telCanonico: string;
       regiao: string | null;
-      cadastro: CadastroIndex | null; // null se não existe em crm_leads_capturados
+      cadastro: CadastroIndex | null;
+      matchType: 'exato' | 'fingerprint' | 'nenhum';
     };
     const dentroDoPeriodo = (dataStr: string | null): boolean => {
       if (!dataStr) return false;
@@ -378,17 +404,39 @@ export async function GET(req: NextRequest) {
       return d >= dataInicioStr && d <= dataFimStr;
     };
 
+    let cntMatchExato = 0, cntMatchFingerprint = 0, cntSemMatch = 0, cntFingerprintAmbiguo = 0;
+
     const itensTP: TPItem[] = linhasPlanilhaFiltradas.map(r => {
-      let cadastro: CadastroIndex | null = null;
+      // a) match exato
       for (const v of (r.variacoes || [r.telCanonico])) {
         const m = indiceTelCadastro.get(v);
         if (m) {
-          cadastro = m;
-          break;
+          cntMatchExato++;
+          return { telCanonico: r.telCanonico, regiao: r.regiao || null, cadastro: m, matchType: 'exato' as const };
         }
       }
-      return { telCanonico: r.telCanonico, regiao: r.regiao || null, cadastro };
+      // b) fallback fingerprint
+      const fp = fingerprint8(r.telCanonico);
+      if (fp) {
+        const candidatos = indiceFingerprint.get(fp);
+        if (candidatos && candidatos.length === 1) {
+          cntMatchFingerprint++;
+          return { telCanonico: r.telCanonico, regiao: r.regiao || null, cadastro: candidatos[0], matchType: 'fingerprint' as const };
+        }
+        if (candidatos && candidatos.length > 1) {
+          // Ambiguidade: >1 cadastro com mesmos últimos 8 dígitos.
+          // Não casamos nada pra evitar associar ao errado.
+          cntFingerprintAmbiguo++;
+        }
+      }
+      cntSemMatch++;
+      return { telCanonico: r.telCanonico, regiao: r.regiao || null, cadastro: null, matchType: 'nenhum' as const };
     });
+
+    console.log(
+      `[Analytics] TP match: exato=${cntMatchExato} | fingerprint=${cntMatchFingerprint} | ` +
+      `semMatch=${cntSemMatch} | fingerprintAmbiguo=${cntFingerprintAmbiguo}`
+    );
 
     // Funil TP — cascata com filtros de período
     const itensTPComCad = itensTP.filter(i =>
