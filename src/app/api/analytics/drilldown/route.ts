@@ -140,11 +140,12 @@ export async function POST(req: NextRequest) {
 
     // ========================================================================
     // Fetch crm_leads_capturados (aba Cadastros) — fonte de cadastro/ativação
+    // CRÍTICO: limit default do backend é 50. Precisamos pedir TUDO.
     // ========================================================================
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
     if (CRM_SERVICE_KEY) headers['x-service-key'] = CRM_SERVICE_KEY;
 
-    const leadsCapResp = await fetch(`${BACKEND_URL}/api/crm/leads-captura/`, {
+    const leadsCapResp = await fetch(`${BACKEND_URL}/api/crm/leads-captura/?page=1&limit=50000`, {
       headers,
       signal: AbortSignal.timeout(15_000),
     }).then(r => r.ok ? r.json() : null).catch(() => null);
