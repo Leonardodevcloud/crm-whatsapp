@@ -392,83 +392,99 @@ export async function GET(req: NextRequest) {
     //      a) Match exato por variação
     //      b) Fallback por fingerprint (últimos 8 dígitos) — se único
     //    Depois aplica cascata do funil (cadastro/ativação no período).
-    type TPItem = {
-      telCanonico: string;
-      regiao: string | null;
-      cadastro: CadastroIndex | null;
-      matchType: 'exato' | 'fingerprint' | 'nenhum';
-    };
+    // Funil TP — 2 versões:
+    //   1) "Filtro atual": usa período selecionado (dataInicioStr..dataFimStr) + região
+    //   2) "Últimos 3 meses": janela fixa (hoje-90d..hoje), IGNORA filtro de região
+    //      (mostra sempre o panorama geral dos últimos 90 dias)
+    // Cada versão reusa os MESMOS índices de cadastro (telefone → cadastro),
+    // então o match é idêntico — só muda o escopo temporal da planilha e os filtros de data.
+
+    // === Helper de período do filtro (selecionado pelo usuário) ===
     const dentroDoPeriodo = (dataStr: string | null): boolean => {
       if (!dataStr) return false;
       const d = dataStr.split('T')[0];
       return d >= dataInicioStr && d <= dataFimStr;
     };
 
-    let cntMatchExato = 0, cntMatchFingerprint = 0, cntSemMatch = 0, cntFingerprintAmbiguo = 0;
+    // === Janela dos últimos 90 dias ===
+    const hoje90 = new Date();
+    const inicio90d = new Date(hoje90.getTime() - 90 * 24 * 60 * 60 * 1000);
+    const dataInicio90 = inicio90d.toISOString().slice(0, 10);
+    const dataFim90 = hoje90.toISOString().slice(0, 10);
+    const dentroDe90d = (dataStr: string | null): boolean => {
+      if (!dataStr) return false;
+      const d = dataStr.split('T')[0];
+      return d >= dataInicio90 && d <= dataFim90;
+    };
 
-    const itensTP: TPItem[] = linhasPlanilhaFiltradas.map(r => {
-      // a) match exato
-      for (const v of (r.variacoes || [r.telCanonico])) {
-        const m = indiceTelCadastro.get(v);
-        if (m) {
-          cntMatchExato++;
-          return { telCanonico: r.telCanonico, regiao: r.regiao || null, cadastro: m, matchType: 'exato' as const };
+    // === Função helper: monta funil TP dado um subconjunto de linhas da planilha
+    //     e um critério de período (usado nos filtros de data_cadastro/ativacao)
+    type FunilTPBuild = {
+      totalPlanilha: number;
+      comCadastro: number;
+      ativados: number;
+      ativadosItens: Array<{ cod_profissional: string }>; // usado pelo bloco BI
+      porRegiao: Record<string, number>;
+    };
+    const montarFunilTP = (
+      linhas: LinhaTPPlanilha[],
+      dentroDataRange: (d: string | null) => boolean
+    ): FunilTPBuild => {
+      // Casar cada linha com um cadastro (exato ou fingerprint único)
+      const casados = linhas.map(r => {
+        let cad: CadastroIndex | null = null;
+        for (const v of (r.variacoes || [r.telCanonico])) {
+          const m = indiceTelCadastro.get(v);
+          if (m) { cad = m; break; }
         }
-      }
-      // b) fallback fingerprint
-      const fp = fingerprint8(r.telCanonico);
-      if (fp) {
-        const candidatos = indiceFingerprint.get(fp);
-        if (candidatos && candidatos.length === 1) {
-          cntMatchFingerprint++;
-          return { telCanonico: r.telCanonico, regiao: r.regiao || null, cadastro: candidatos[0], matchType: 'fingerprint' as const };
+        if (!cad) {
+          const fp = fingerprint8(r.telCanonico);
+          if (fp) {
+            const candidatos = indiceFingerprint.get(fp);
+            if (candidatos && candidatos.length === 1) cad = candidatos[0];
+          }
         }
-        if (candidatos && candidatos.length > 1) {
-          // Ambiguidade: >1 cadastro com mesmos últimos 8 dígitos.
-          // Não casamos nada pra evitar associar ao errado.
-          cntFingerprintAmbiguo++;
-        }
-      }
-      cntSemMatch++;
-      return { telCanonico: r.telCanonico, regiao: r.regiao || null, cadastro: null, matchType: 'nenhum' as const };
-    });
+        return { r, cad };
+      });
+
+      const comCad = casados.filter(x => x.cad && dentroDataRange(x.cad.data_cadastro));
+      const ativ   = comCad.filter(x =>
+        x.cad!.status_api === 'ativo' && dentroDataRange(x.cad!.data_ativacao)
+      );
+
+      const porRegiao: Record<string, number> = {};
+      casados.forEach(x => {
+        const reg = (x.r.regiao && String(x.r.regiao).trim()) || 'SEM REGIÃO';
+        const key = reg.toUpperCase();
+        porRegiao[key] = (porRegiao[key] || 0) + 1;
+      });
+
+      return {
+        totalPlanilha: casados.length,
+        comCadastro: comCad.length,
+        ativados: ativ.length,
+        ativadosItens: ativ.map(x => ({ cod_profissional: x.cad!.cod })),
+        porRegiao,
+      };
+    };
+
+    // === Versão 1: Filtro atual (linhasPlanilhaFiltradas já respeita período + região)
+    const funilAtual = montarFunilTP(linhasPlanilhaFiltradas, dentroDoPeriodo);
+
+    // === Versão 2: Últimos 3 meses (90 dias) — ignora região, usa janela fixa
+    const linhas90d = linhasPlanilhaTP.filter(r => r.dataISO && dentroDe90d(r.dataISO));
+    const funil90d = montarFunilTP(linhas90d, dentroDe90d);
 
     console.log(
-      `[Analytics] TP match: exato=${cntMatchExato} | fingerprint=${cntMatchFingerprint} | ` +
-      `semMatch=${cntSemMatch} | fingerprintAmbiguo=${cntFingerprintAmbiguo}`
+      `[Analytics] TP funil atual: planilha=${funilAtual.totalPlanilha} comCad=${funilAtual.comCadastro} ativ=${funilAtual.ativados} | ` +
+      `TP funil 90d: planilha=${funil90d.totalPlanilha} comCad=${funil90d.comCadastro} ativ=${funil90d.ativados}`
     );
 
-    // Funil TP — cascata com filtros de período
-    const itensTPComCad = itensTP.filter(i =>
-      i.cadastro && dentroDoPeriodo(i.cadastro.data_cadastro)
-    );
-    const itensTPAtivados = itensTPComCad.filter(i =>
-      i.cadastro!.status_api === 'ativo' && dentroDoPeriodo(i.cadastro!.data_ativacao)
-    );
-
-    // Diagnóstico: quantos TPs deram match em QUALQUER data (ignorando período)
-    const tpComMatchGlobal = itensTP.filter(i => i.cadastro).length;
-    console.log(
-      `[Analytics] TP funil: planilhaPeriodo=${linhasPlanilhaFiltradas.length} | ` +
-      `matchCadastros_qualquerData=${tpComMatchGlobal} | ` +
-      `cadastradosNoPeriodo=${itensTPComCad.length} | ` +
-      `ativadosNoPeriodo=${itensTPAtivados.length}`
-    );
-
-    // Valores expostos (nomes que o restante do código usa)
-    const leadsComTP         = { length: itensTP.length };
-    const leadsTPComCadastro = { length: itensTPComCad.length };
-    const leadsTPAtivados    = itensTPAtivados.map(i => ({
-      cod_profissional: i.cadastro!.cod, // compatibilidade com o bloco BI
-    }));
-
-    // TP por região — agrupa pela coluna da planilha (não pelo CRM)
-    const tpPorRegiao: Record<string, number> = {};
-    itensTP.forEach(item => {
-      const reg = (item.regiao && String(item.regiao).trim()) || 'SEM REGIÃO';
-      const key = reg.toUpperCase();
-      tpPorRegiao[key] = (tpPorRegiao[key] || 0) + 1;
-    });
+    // Mantém variáveis antigas (o bloco BI abaixo usa leadsTPAtivados)
+    const leadsComTP         = { length: funilAtual.totalPlanilha };
+    const leadsTPComCadastro = { length: funilAtual.comCadastro };
+    const leadsTPAtivados    = funilAtual.ativadosItens;
+    const tpPorRegiao        = funilAtual.porRegiao;
 
     // Mortos/ressuscitados removidos do analytics conforme solicitação
     // (conceitos seguem existindo no kanban, cron de enriquecimento e types)
@@ -480,9 +496,14 @@ export async function GET(req: NextRequest) {
     // ═══ 3. BI ═══ (agora passa data_inicio/data_fim pra respeitar filtro do período)
     let emOperacao = 0;
     let tpEmOperacao = 0;
+    let tpEmOperacao90d = 0; // versão "últimos 3 meses" (janela fixa 90d)
     let codsEmOperacaoSet = new Set<string>();
     try {
       const codigosAtivos = leadsPorAtivacao.map((l: any) => String(l.cod)).filter(Boolean);
+      // Códigos dos TP Ativados em AMBAS as versões (pra medir operação)
+      const codsTPAtivosAtuais = funilAtual.ativadosItens.map(i => i.cod_profissional).filter(Boolean);
+      const codsTPAtivos90d    = funil90d.ativadosItens.map(i => i.cod_profissional).filter(Boolean);
+
       if (codigosAtivos.length > 0) {
         const biResult = await fetch(`${BI_API_URL}/api/crm/verificar-operacao`, {
           method: 'POST',
@@ -497,6 +518,20 @@ export async function GET(req: NextRequest) {
           codsEmOperacaoSet = new Set(biResult.resultado.filter((r: any) => r.em_operacao).map((r: any) => String(r.cod_profissional)));
           const codsTPAtivados = new Set<string>(leadsTPAtivados.map((l: any) => String(l.cod_profissional)));
           tpEmOperacao = Array.from(codsTPAtivados).filter((c: string) => codsEmOperacaoSet.has(c)).length;
+        }
+      }
+
+      // TP em Operação — VERSÃO 90 DIAS (janela fixa independente do filtro)
+      if (codsTPAtivos90d.length > 0) {
+        const bi90 = await fetch(`${BI_API_URL}/api/crm/verificar-operacao`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...(CRM_SERVICE_KEY ? { 'x-service-key': CRM_SERVICE_KEY } : {}) },
+          body: JSON.stringify({ codigos: codsTPAtivos90d, data_inicio: dataInicio90, data_fim: dataFim90 }),
+        }).then(r => r.json()).catch(() => null);
+        if (bi90?.resultado) {
+          const setOp90 = new Set(bi90.resultado.filter((r: any) => r.em_operacao).map((r: any) => String(r.cod_profissional)));
+          const setTP90 = new Set<string>(codsTPAtivos90d);
+          tpEmOperacao90d = Array.from(setTP90).filter((c: string) => setOp90.has(c)).length;
         }
       }
     } catch (err: any) { console.error('[Analytics] Erro BI:', err.message); }
@@ -563,6 +598,19 @@ export async function GET(req: NextRequest) {
           { stage: 'TP Ativados',     quantidade: leadsTPAtivados.length,    cor: '#22C55E', base: leadsTPComCadastro.length || 1 },
           { stage: 'TP em Operação',  quantidade: tpEmOperacao,               cor: '#10B981', base: leadsTPAtivados.length || 1 },
         ],
+        // Versão alternativa: últimos 90 dias corridos (janela fixa hoje-90d..hoje)
+        // Ignora filtro de data e região selecionados pelo usuário
+        funilTP90d: [
+          { stage: 'Leads com Tag TP', quantidade: funil90d.totalPlanilha, cor: '#8B5CF6', base: funil90d.totalPlanilha || 1 },
+          { stage: 'TP com Cadastro',  quantidade: funil90d.comCadastro,    cor: '#F59E0B', base: funil90d.totalPlanilha || 1 },
+          { stage: 'TP Ativados',      quantidade: funil90d.ativados,       cor: '#22C55E', base: funil90d.comCadastro || 1 },
+          { stage: 'TP em Operação',   quantidade: tpEmOperacao90d,          cor: '#10B981', base: funil90d.ativados || 1 },
+        ],
+        funilTP90dMeta: {
+          dataInicio: dataInicio90,
+          dataFim: dataFim90,
+          janela: 'últimos 90 dias corridos',
+        },
         conversaoOperacao: { leadsAtivados: totalAtivos, emOperacao, naoOperando: totalAtivos - emOperacao, taxaReal: taxaOperacao },
         porRegiao: Object.entries(ativadosPorRegiao).map(([r, q]) => ({ regiao: r, quantidade: q })).sort((a, b) => b.quantidade - a.quantidade),
         naoAtivadosPorRegiao: Object.entries(naoAtivadosPorRegiao).map(([r, q]) => ({ regiao: r, quantidade: q })).sort((a, b) => b.quantidade - a.quantidade),
