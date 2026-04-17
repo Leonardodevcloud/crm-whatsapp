@@ -166,6 +166,43 @@ export async function POST(req: NextRequest) {
 
     const todosLeads: any[] = leadsCapResp?.data || [];
 
+    // ========================================================================
+    // Pré-carregar planilha TP INTEIRA (sem filtro de data) para construir
+    // um índice Telefone → [tags] que vai enriquecer TODOS os leads exportados.
+    // Isso faz com que um lead ativado do funil de conversão mostre a tag TP
+    // quando tiver aparecido na planilha, mesmo que seja drill-down do conversão.
+    // ========================================================================
+    const todasLinhasTP = await carregarPlanilhaTP('1900-01-01', '2999-12-31', undefined);
+    const indiceTagsPorTelefone = new Map<string, Set<string>>();
+    for (const linha of todasLinhasTP) {
+      for (const v of (linha.variacoes || [linha.telCanonico])) {
+        const tags = indiceTagsPorTelefone.get(v) || new Set<string>();
+        if (linha.tag) tags.add(linha.tag);
+        indiceTagsPorTelefone.set(v, tags);
+      }
+    }
+
+    // Helper: dado um telefone, retorna as tags TP que esse lead tem na planilha
+    const obterTagsDoLead = (tel: string | null | undefined): string[] => {
+      if (!tel) return [];
+      for (const v of gerarVariacoesTel(tel)) {
+        const s = indiceTagsPorTelefone.get(v);
+        if (s && s.size > 0) return Array.from(s);
+      }
+      return [];
+    };
+
+    // Helper que envolve toLeadExport adicionando as tags TP e marcando origem
+    const enriquecer = (l: any): LeadExport => {
+      const base = toLeadExport(l);
+      const tags = obterTagsDoLead(base.telefone);
+      if (tags.length > 0) {
+        base.tags = tags;
+        base.origem = 'Cadastros+TP'; // tem registro em ambos
+      }
+      return base;
+    };
+
     // Filtros base (período + região)
     const leadsPorCadastro = todosLeads.filter(l =>
       dentroDoPeriodo(l.data_cadastro) && matchRegiao(l.regiao)
@@ -185,9 +222,9 @@ export async function POST(req: NextRequest) {
     // ---------- FUNIL DE CONVERSÃO ----------
     if (funilLower === 'conversao') {
       if (stageLower.includes('total cadastros') || stageLower === 'cadastros') {
-        resultado = leadsPorCadastro.map(toLeadExport);
+        resultado = leadsPorCadastro.map(enriquecer);
       } else if (stageLower === 'ativados') {
-        resultado = leadsPorAtivacao.map(toLeadExport);
+        resultado = leadsPorAtivacao.map(enriquecer);
       } else if (stageLower === 'alocados') {
         // Alocações da tabela Supabase
         const client = supabaseAdmin || supabase;
@@ -204,10 +241,19 @@ export async function POST(req: NextRequest) {
         resultado = (Array.from(codsAlocados) as string[])
           .map(cod => indexLeads.get(cod))
           .filter(l => l && matchRegiao(l.regiao))
-          .map(toLeadExport);
+          .map(enriquecer);
       } else if (stageLower.includes('em operação') || stageLower.includes('em operacao')) {
         // Em operação: cruza ativados com bi_entregas via endpoint
         resultado = await buscarEmOperacao(leadsPorAtivacao, dataInicioStr, dataFimStr);
+        // Enriquece com tags TP
+        resultado = resultado.map(lead => {
+          const tags = obterTagsDoLead(lead.telefone);
+          if (tags.length > 0) {
+            lead.tags = tags;
+            lead.origem = 'Cadastros+TP';
+          }
+          return lead;
+        });
       } else {
         return NextResponse.json(
           { error: `Stage "${stage}" desconhecido para funil de conversão` },
