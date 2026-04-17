@@ -5,7 +5,7 @@ import AuthLayout from '@/components/AuthLayout';
 import { useApi } from '@/lib/hooks';
 import {
   Users, UserCheck, UserPlus, TrendingUp, RefreshCw, Loader2, AlertCircle,
-  MapPin, Calendar, Truck, XCircle, Tag, Info, BarChart3, Zap,
+  MapPin, Calendar, Truck, XCircle, Tag, Info, BarChart3, Zap, Plus, X, Download, Search,
 } from 'lucide-react';
 
 function InfoTooltip({ text }: { text: string }) {
@@ -37,26 +37,283 @@ interface AnalyticsData {
   filtros: { dataInicio: string; dataFim: string; regiao: string };
 }
 
-function FunnelBar({ items, maxVal }: { items: Array<{ stage: string; quantidade: number; cor: string; base: number }>; maxVal: number }) {
+// ═══ Drilldown Modal ═══
+type LeadRow = {
+  cod: string | null;
+  nome: string | null;
+  telefone: string | null;
+  regiao: string | null;
+  data_cadastro: string | null;
+  data_ativacao: string | null;
+  data_lead: string | null;
+  status_api: string | null;
+  em_operacao: boolean;
+  total_entregas: number | null;
+  ultima_entrega: string | null;
+  quem_ativou: string | null;
+  quem_alocou: string | null;
+  tags: string[];
+  origem: string | null;
+};
+
+function formatDate(d: string | null): string {
+  if (!d) return '';
+  const s = String(d).split('T')[0];
+  const [y, m, dia] = s.split('-');
+  if (!y || !m || !dia) return s;
+  return `${dia}/${m}/${y}`;
+}
+
+function DrilldownModal({
+  open, onClose, funil, stage, filtros,
+}: {
+  open: boolean;
+  onClose: () => void;
+  funil: 'conversao' | 'tp';
+  stage: string;
+  filtros: { dataInicio: string; dataFim: string; regiao: string };
+}) {
+  const [loading, setLoading] = useState(false);
+  const [erro, setErro] = useState<string | null>(null);
+  const [leads, setLeads] = useState<LeadRow[]>([]);
+  const [busca, setBusca] = useState('');
+
+  useEffect(() => {
+    if (!open) return;
+    let cancelado = false;
+    setLoading(true); setErro(null); setLeads([]); setBusca('');
+    fetch('/api/analytics/drilldown', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ funil, stage, dataInicio: filtros.dataInicio, dataFim: filtros.dataFim, regiao: filtros.regiao || undefined }),
+    })
+      .then(r => r.ok ? r.json() : r.json().then(j => { throw new Error(j.error || 'Erro ao carregar'); }))
+      .then(data => { if (!cancelado) setLeads(data.leads || []); })
+      .catch(e => { if (!cancelado) setErro(e.message); })
+      .finally(() => { if (!cancelado) setLoading(false); });
+    return () => { cancelado = true; };
+  }, [open, funil, stage, filtros.dataInicio, filtros.dataFim, filtros.regiao]);
+
+  // Fecha com ESC
+  useEffect(() => {
+    if (!open) return;
+    const onEsc = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onEsc);
+    return () => window.removeEventListener('keydown', onEsc);
+  }, [open, onClose]);
+
+  if (!open) return null;
+
+  const buscaLower = busca.trim().toLowerCase();
+  const filtrados = buscaLower
+    ? leads.filter(l =>
+        (l.nome || '').toLowerCase().includes(buscaLower) ||
+        (l.telefone || '').toLowerCase().includes(buscaLower) ||
+        (l.regiao || '').toLowerCase().includes(buscaLower) ||
+        (l.cod || '').toLowerCase().includes(buscaLower) ||
+        (l.quem_ativou || '').toLowerCase().includes(buscaLower) ||
+        (l.tags || []).some(t => t.toLowerCase().includes(buscaLower))
+      )
+    : leads;
+
+  const exportarCSV = () => {
+    const cols = [
+      'Código', 'Nome', 'Telefone', 'Região', 'Data Cadastro', 'Data Ativação',
+      'Data Lead (TP)', 'Status API', 'Em Operação', 'Total Entregas', 'Última Entrega',
+      'Quem Ativou', 'Quem Alocou', 'Tags', 'Origem',
+    ];
+    const escapeCsv = (v: any): string => {
+      if (v === null || v === undefined) return '';
+      const s = String(v);
+      if (/[",\n;]/.test(s)) return '"' + s.replace(/"/g, '""') + '"';
+      return s;
+    };
+    const linhas = [
+      cols.join(';'),
+      ...filtrados.map(l => [
+        l.cod, l.nome, l.telefone, l.regiao,
+        formatDate(l.data_cadastro), formatDate(l.data_ativacao), formatDate(l.data_lead),
+        l.status_api, l.em_operacao ? 'Sim' : 'Não', l.total_entregas ?? '',
+        formatDate(l.ultima_entrega), l.quem_ativou, l.quem_alocou,
+        (l.tags || []).join(', '), l.origem,
+      ].map(escapeCsv).join(';')),
+    ].join('\n');
+    // BOM pra Excel reconhecer UTF-8
+    const blob = new Blob(['\uFEFF' + linhas], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    const slug = stage.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+    a.download = `drilldown-${slug}-${filtros.dataInicio}-a-${filtros.dataFim}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
   return (
-    <div className="space-y-4">
-      {items.map((item, i) => {
-        const widthPct = maxVal > 0 ? Math.round((item.quantidade / maxVal) * 100) : 0;
-        const labelPct = item.base > 0 ? Math.round((item.quantidade / item.base) * 100) : 0;
-        return (
-          <div key={i}>
-            <div className="flex justify-between items-center mb-1">
-              <span className="text-sm font-medium text-gray-700">{item.stage} <InfoTooltip text={`${item.quantidade.toLocaleString()} de ${item.base.toLocaleString()} (${labelPct}%)`} /></span>
-              <span className="text-sm font-bold text-gray-800">{item.quantidade.toLocaleString()}</span>
-            </div>
-            <div className="w-full bg-gray-100 rounded-full h-7 overflow-hidden">
-              <div className="h-full rounded-full flex items-center justify-center text-white text-xs font-bold transition-all duration-700"
-                style={{ width: `${Math.max(widthPct, 3)}%`, backgroundColor: item.cor }}>{labelPct}%</div>
+    <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/50" onClick={onClose}>
+      <div className="bg-white rounded-xl shadow-2xl w-full max-w-[95vw] max-h-[90vh] flex flex-col" onClick={e => e.stopPropagation()}>
+        {/* Header */}
+        <div className="flex items-center justify-between px-5 py-4 border-b border-gray-200">
+          <div>
+            <h2 className="text-lg font-bold text-gray-800">{stage}</h2>
+            <p className="text-xs text-gray-500">
+              {filtros.dataInicio} a {filtros.dataFim}
+              {filtros.regiao ? ` • ${filtros.regiao}` : ''}
+              {!loading && ` • ${filtrados.length} de ${leads.length}`}
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            <button onClick={exportarCSV} disabled={loading || leads.length === 0}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-sm bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:bg-gray-300 disabled:cursor-not-allowed">
+              <Download className="w-4 h-4" /> CSV
+            </button>
+            <button onClick={onClose} className="p-1.5 hover:bg-gray-100 rounded-lg">
+              <X className="w-5 h-5 text-gray-600" />
+            </button>
+          </div>
+        </div>
+
+        {/* Busca */}
+        {!loading && leads.length > 0 && (
+          <div className="px-5 py-3 border-b border-gray-200">
+            <div className="relative">
+              <Search className="w-4 h-4 text-gray-400 absolute left-3 top-1/2 -translate-y-1/2" />
+              <input type="text" placeholder="Buscar por nome, telefone, região, código..."
+                value={busca} onChange={e => setBusca(e.target.value)}
+                className="w-full pl-9 pr-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500" />
             </div>
           </div>
-        );
-      })}
+        )}
+
+        {/* Body */}
+        <div className="flex-1 overflow-auto">
+          {loading && (
+            <div className="flex items-center justify-center py-16">
+              <Loader2 className="w-8 h-8 text-purple-500 animate-spin" />
+            </div>
+          )}
+          {erro && (
+            <div className="p-6 flex items-center gap-2 text-red-600">
+              <AlertCircle className="w-5 h-5" /> {erro}
+            </div>
+          )}
+          {!loading && !erro && filtrados.length === 0 && (
+            <div className="p-16 text-center text-gray-400">
+              {leads.length === 0 ? 'Nenhum lead encontrado nesta etapa.' : 'Nenhum resultado para a busca.'}
+            </div>
+          )}
+          {!loading && !erro && filtrados.length > 0 && (
+            <table className="w-full text-sm">
+              <thead className="bg-gray-50 sticky top-0">
+                <tr>
+                  <th className="px-3 py-2 text-left font-semibold text-gray-600 text-xs">Código</th>
+                  <th className="px-3 py-2 text-left font-semibold text-gray-600 text-xs">Nome</th>
+                  <th className="px-3 py-2 text-left font-semibold text-gray-600 text-xs">Telefone</th>
+                  <th className="px-3 py-2 text-left font-semibold text-gray-600 text-xs">Região</th>
+                  <th className="px-3 py-2 text-left font-semibold text-gray-600 text-xs">Cadastro</th>
+                  <th className="px-3 py-2 text-left font-semibold text-gray-600 text-xs">Ativação</th>
+                  <th className="px-3 py-2 text-left font-semibold text-gray-600 text-xs">Data Lead TP</th>
+                  <th className="px-3 py-2 text-left font-semibold text-gray-600 text-xs">Status</th>
+                  <th className="px-3 py-2 text-left font-semibold text-gray-600 text-xs">Operação</th>
+                  <th className="px-3 py-2 text-left font-semibold text-gray-600 text-xs">Entregas</th>
+                  <th className="px-3 py-2 text-left font-semibold text-gray-600 text-xs">Última Entrega</th>
+                  <th className="px-3 py-2 text-left font-semibold text-gray-600 text-xs">Ativou</th>
+                  <th className="px-3 py-2 text-left font-semibold text-gray-600 text-xs">Alocou</th>
+                  <th className="px-3 py-2 text-left font-semibold text-gray-600 text-xs">Tags</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filtrados.map((l, i) => (
+                  <tr key={i} className={i % 2 === 0 ? 'bg-white' : 'bg-gray-50'}>
+                    <td className="px-3 py-2 text-gray-700 tabular-nums">{l.cod || '—'}</td>
+                    <td className="px-3 py-2 text-gray-700">{l.nome || '—'}</td>
+                    <td className="px-3 py-2 text-gray-700 tabular-nums">{l.telefone || '—'}</td>
+                    <td className="px-3 py-2 text-gray-700">{l.regiao || '—'}</td>
+                    <td className="px-3 py-2 text-gray-700 tabular-nums">{formatDate(l.data_cadastro) || '—'}</td>
+                    <td className="px-3 py-2 text-gray-700 tabular-nums">{formatDate(l.data_ativacao) || '—'}</td>
+                    <td className="px-3 py-2 text-gray-700 tabular-nums">{formatDate(l.data_lead) || '—'}</td>
+                    <td className="px-3 py-2">
+                      {l.status_api === 'ativo' ? (
+                        <span className="px-1.5 py-0.5 text-xs rounded bg-green-100 text-green-700">ativo</span>
+                      ) : l.status_api ? (
+                        <span className="px-1.5 py-0.5 text-xs rounded bg-gray-100 text-gray-600">{l.status_api}</span>
+                      ) : '—'}
+                    </td>
+                    <td className="px-3 py-2">
+                      {l.em_operacao ? (
+                        <span className="px-1.5 py-0.5 text-xs rounded bg-blue-100 text-blue-700">operando</span>
+                      ) : '—'}
+                    </td>
+                    <td className="px-3 py-2 text-gray-700 tabular-nums">{l.total_entregas ?? '—'}</td>
+                    <td className="px-3 py-2 text-gray-700 tabular-nums">{formatDate(l.ultima_entrega) || '—'}</td>
+                    <td className="px-3 py-2 text-gray-700">{l.quem_ativou || '—'}</td>
+                    <td className="px-3 py-2 text-gray-700">{l.quem_alocou || '—'}</td>
+                    <td className="px-3 py-2 text-gray-700">
+                      {(l.tags || []).map((t, j) => (
+                        <span key={j} className="inline-block px-1.5 py-0.5 mr-1 mb-0.5 text-xs rounded bg-purple-100 text-purple-700">{t}</span>
+                      ))}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      </div>
     </div>
+  );
+}
+
+function FunnelBar({
+  items, maxVal, funil, filtros,
+}: {
+  items: Array<{ stage: string; quantidade: number; cor: string; base: number }>;
+  maxVal: number;
+  funil: 'conversao' | 'tp';
+  filtros: { dataInicio: string; dataFim: string; regiao: string };
+}) {
+  const [modalOpen, setModalOpen] = useState(false);
+  const [stageAberto, setStageAberto] = useState('');
+
+  return (
+    <>
+      <div className="space-y-4">
+        {items.map((item, i) => {
+          const widthPct = maxVal > 0 ? Math.round((item.quantidade / maxVal) * 100) : 0;
+          const labelPct = item.base > 0 ? Math.round((item.quantidade / item.base) * 100) : 0;
+          return (
+            <div key={i}>
+              <div className="flex justify-between items-center mb-1">
+                <span className="text-sm font-medium text-gray-700 flex items-center">
+                  {item.stage}
+                  <InfoTooltip text={`${item.quantidade.toLocaleString()} de ${item.base.toLocaleString()} (${labelPct}%)`} />
+                  <button
+                    onClick={() => { setStageAberto(item.stage); setModalOpen(true); }}
+                    className="ml-2 p-0.5 rounded hover:bg-purple-100 text-purple-600 hover:text-purple-700 transition-colors"
+                    title={`Ver ${item.quantidade.toLocaleString()} leads de "${item.stage}"`}
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                  </button>
+                </span>
+                <span className="text-sm font-bold text-gray-800">{item.quantidade.toLocaleString()}</span>
+              </div>
+              <div className="w-full bg-gray-100 rounded-full h-7 overflow-hidden">
+                <div className="h-full rounded-full flex items-center justify-center text-white text-xs font-bold transition-all duration-700"
+                  style={{ width: `${Math.max(widthPct, 3)}%`, backgroundColor: item.cor }}>{labelPct}%</div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      <DrilldownModal
+        open={modalOpen}
+        onClose={() => setModalOpen(false)}
+        funil={funil}
+        stage={stageAberto}
+        filtros={filtros}
+      />
+    </>
   );
 }
 
@@ -231,8 +488,8 @@ function AnalyticsContent() {
 
       {/* Funis */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <div className="card p-5"><h3 className="text-lg font-bold text-gray-800 flex items-center gap-2 mb-4"><TrendingUp className="w-5 h-5 text-indigo-600" /> Funil de Conversão</h3><FunnelBar items={funil} maxVal={funil[0]?.quantidade || 1} /></div>
-        <div className="card p-5"><h3 className="text-lg font-bold text-gray-800 flex items-center gap-2 mb-4"><Tag className="w-5 h-5 text-purple-600" /> Funil Tráfego Pago</h3><FunnelBar items={funilTP} maxVal={funilTP[0]?.quantidade || 1} /></div>
+        <div className="card p-5"><h3 className="text-lg font-bold text-gray-800 flex items-center gap-2 mb-4"><TrendingUp className="w-5 h-5 text-indigo-600" /> Funil de Conversão</h3><FunnelBar items={funil} maxVal={funil[0]?.quantidade || 1} funil="conversao" filtros={{ dataInicio, dataFim, regiao }} /></div>
+        <div className="card p-5"><h3 className="text-lg font-bold text-gray-800 flex items-center gap-2 mb-4"><Tag className="w-5 h-5 text-purple-600" /> Funil Tráfego Pago</h3><FunnelBar items={funilTP} maxVal={funilTP[0]?.quantidade || 1} funil="tp" filtros={{ dataInicio, dataFim, regiao }} /></div>
       </div>
 
       {/* Regiões */}
