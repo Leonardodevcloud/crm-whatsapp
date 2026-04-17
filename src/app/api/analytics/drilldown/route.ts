@@ -51,6 +51,11 @@ function gerarVariacoesTel(tel: string): string[] {
   }
   return Array.from(variacoes);
 }
+function fingerprint8(tel: string): string | null {
+  const norm = normalizarTel(tel);
+  if (norm.length < 8) return null;
+  return norm.slice(-8);
+}
 function parseCsvLinha(l: string): string[] {
   const out: string[] = [];
   let cur = '';
@@ -199,21 +204,37 @@ export async function POST(req: NextRequest) {
     else if (funilLower === 'tp') {
       // Carregar planilha TP
       const itensTP = await carregarPlanilhaTP(dataInicioStr, dataFimStr, regiao);
-      // Indexar cadastros por telefone
+      // Indexar cadastros por telefone: exato + fingerprint
       const indiceTelCadastro = new Map<string, any>();
+      const indiceFingerprint = new Map<string, any[]>();
       for (const lead of todosLeads) {
         const tel = lead.telefone || lead.celular || '';
         if (!tel) continue;
         for (const v of gerarVariacoesTel(tel)) {
           if (!indiceTelCadastro.has(v)) indiceTelCadastro.set(v, lead);
         }
+        const fp = fingerprint8(tel);
+        if (fp) {
+          const lista = indiceFingerprint.get(fp);
+          if (lista) lista.push(lead);
+          else indiceFingerprint.set(fp, [lead]);
+        }
       }
-      // Para cada TP, tenta casar com cadastro
+      // Para cada TP, tenta casar com cadastro: exato → fingerprint único
       const tpComCadastro = itensTP.map(r => {
         let cad: any = null;
         for (const v of r.variacoes) {
           const m = indiceTelCadastro.get(v);
           if (m) { cad = m; break; }
+        }
+        if (!cad) {
+          const fp = fingerprint8(r.telCanonico);
+          if (fp) {
+            const candidatos = indiceFingerprint.get(fp);
+            if (candidatos && candidatos.length === 1) {
+              cad = candidatos[0];
+            }
+          }
         }
         return { ...r, cadastro: cad };
       });
