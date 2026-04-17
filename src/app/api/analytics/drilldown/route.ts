@@ -220,11 +220,47 @@ export async function POST(req: NextRequest) {
     let resultado: LeadExport[] = [];
 
     // ---------- FUNIL DE CONVERSÃO ----------
+    // Helper: enriquece uma lista de LeadExport com dados de bi_entregas.
+    // Todos os drilldowns (exceto "Em Operação" que já filtra por isso) passam
+    // por aqui pra que a coluna Operação/Entregas/Última Entrega apareça
+    // preenchida quando o lead estiver rodando — mesmo no stage "Cadastros".
+    const enriquecerComOperacao = async (leads: LeadExport[]): Promise<LeadExport[]> => {
+      const codsParaVerificar = leads.map(l => l.cod).filter(Boolean) as string[];
+      if (codsParaVerificar.length === 0) return leads;
+
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (CRM_SERVICE_KEY) headers['x-service-key'] = CRM_SERVICE_KEY;
+
+      const resp = await fetch(`${BACKEND_URL}/api/crm/verificar-operacao`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ codigos: codsParaVerificar, data_inicio: dataInicioStr, data_fim: dataFimStr }),
+        signal: AbortSignal.timeout(20_000),
+      }).then(r => r.ok ? r.json() : null).catch(() => null);
+
+      if (!resp?.resultado) return leads;
+
+      const mapaOp = new Map<string, any>();
+      for (const r of resp.resultado) {
+        if (r.em_operacao && r.dados) mapaOp.set(String(r.cod_profissional), r.dados);
+      }
+
+      return leads.map(l => {
+        const op = l.cod ? mapaOp.get(l.cod) : null;
+        if (op) {
+          l.em_operacao = true;
+          l.total_entregas = Number(op.total_entregas) || null;
+          l.ultima_entrega = op.ultima_entrega || null;
+        }
+        return l;
+      });
+    };
+
     if (funilLower === 'conversao') {
       if (stageLower.includes('total cadastros') || stageLower === 'cadastros') {
-        resultado = leadsPorCadastro.map(enriquecer);
+        resultado = await enriquecerComOperacao(leadsPorCadastro.map(enriquecer));
       } else if (stageLower === 'ativados') {
-        resultado = leadsPorAtivacao.map(enriquecer);
+        resultado = await enriquecerComOperacao(leadsPorAtivacao.map(enriquecer));
       } else if (stageLower === 'alocados') {
         // Alocações da tabela Supabase
         const client = supabaseAdmin || supabase;
@@ -238,10 +274,11 @@ export async function POST(req: NextRequest) {
           (alocs || []).map(a => String(a.cod_profissional)).filter(Boolean)
         );
         const indexLeads = new Map(todosLeads.map(l => [String(l.cod), l]));
-        resultado = (Array.from(codsAlocados) as string[])
+        const alocadosList = (Array.from(codsAlocados) as string[])
           .map(cod => indexLeads.get(cod))
           .filter(l => l && matchRegiao(l.regiao))
           .map(enriquecer);
+        resultado = await enriquecerComOperacao(alocadosList);
       } else if (stageLower.includes('em operação') || stageLower.includes('em operacao')) {
         // Em operação: cruza ativados com bi_entregas via endpoint
         resultado = await buscarEmOperacao(leadsPorAtivacao, dataInicioStr, dataFimStr);
@@ -311,15 +348,34 @@ export async function POST(req: NextRequest) {
       } else if (stageLower.includes('tp ativados') || stageLower === 'ativados') {
         // Cadastrado no período + status_api='ativo'. Se data_ativacao existir,
         // respeita período; se for null, aceita (alinhado ao analytics).
-        resultado = tpComCadastro
-          .filter(r => {
-            if (!r.cadastro) return false;
-            if (!dentroDoPeriodo(r.cadastro.data_cadastro)) return false;
-            if (r.cadastro.status_api !== 'ativo') return false;
-            if (!r.cadastro.data_ativacao) return true;
-            return dentroDoPeriodo(r.cadastro.data_ativacao);
-          })
-          .map(r => tpItemToExport(r));
+        const ativados = tpComCadastro.filter(r => {
+          if (!r.cadastro) return false;
+          if (!dentroDoPeriodo(r.cadastro.data_cadastro)) return false;
+          if (r.cadastro.status_api !== 'ativo') return false;
+          if (!r.cadastro.data_ativacao) return true;
+          return dentroDoPeriodo(r.cadastro.data_ativacao);
+        });
+
+        // Enriquecer com dados de operação (bi_entregas) — mesmo que o stage
+        // seja "TP Ativados" (não "em Operação"), queremos mostrar a coluna
+        // Operação/Entregas/Última Entrega preenchida quando o lead estiver
+        // rodando. O usuário precisa ver o quadro completo.
+        const leadsParaOp = ativados
+          .filter(r => r.cadastro && r.cadastro.cod)
+          .map(r => r.cadastro);
+        const comOperacao = await buscarEmOperacao(leadsParaOp, dataInicioStr, dataFimStr);
+        const mapaOp = new Map(comOperacao.map(o => [o.cod, o]));
+
+        resultado = ativados.map(r => {
+          const base = tpItemToExport(r);
+          const op = r.cadastro ? mapaOp.get(String(r.cadastro.cod)) : null;
+          if (op) {
+            base.em_operacao = true;
+            base.total_entregas = op.total_entregas;
+            base.ultima_entrega = op.ultima_entrega;
+          }
+          return base;
+        });
       } else if (stageLower.includes('tp em operação') || stageLower.includes('em operacao')) {
         // Ativados (mesma regra relaxada) + em operação no período
         const ativados = tpComCadastro.filter(r => {
