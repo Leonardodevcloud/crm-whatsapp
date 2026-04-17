@@ -1,15 +1,18 @@
 // ===========================================
 // API: /api/cron/reconciliar-tp
-// POST: Garante que todo lead TP da planilha vire um card no Kanban.
+// POST: Garante que todo lead TP da planilha vire um card no Kanban
+//       E reflete mudanças da planilha (nome, região, tag) no CRM.
+//
+// A planilha TP é fonte de verdade para os leads:
+//   - Se lead não existe em dados_cliente → CRIA
+//   - Se já existe com tag diferente → ADICIONA tag
+//   - Se nome na planilha difere do banco → ATUALIZA nome
+//   - Se região na planilha difere do banco → ATUALIZA região
 //
 // Por quê: o workflow N8N Z-API4.0 pode engolir leads TP por 3 caminhos:
 //   1. If1 com operador `object empty` frágil
 //   2. `Verificar Tutts` timeout/erro → execução para
 //   3. `Buscar em Não Iniciados1` vazio → quebra o Criar contato
-//
-// Este cron é a rede de segurança: a planilha TP é a verdade.
-// Toda linha vira um lead em dados_cliente (se ainda não existir) ou
-// tem suas tags reconciliadas (se já existir).
 //
 // Chamada: N8N a cada 15 minutos
 //   curl -X POST https://<crm>/api/cron/reconciliar-tp \
@@ -114,8 +117,10 @@ export async function POST(req: NextRequest) {
     planilhaTotal: 0,
     linhasTPValidas: 0,
     linhasForaDoBackfill: 0,
-    jaExistiaOK: 0,        // já existe em dados_cliente E já tem a tag TP
-    atualizadoTag: 0,      // já existe mas precisou adicionar a tag TP
+    jaExistiaOK: 0,        // já existe, todos os campos já batem com planilha
+    atualizadoTag: 0,      // tag TP foi adicionada
+    atualizadoNome: 0,     // nomewpp foi atualizado (valor divergente da planilha)
+    atualizadoRegiao: 0,   // regiao foi atualizada (valor divergente da planilha)
     criado: 0,             // novo registro criado em dados_cliente
     semTelefoneValido: 0,  // linha ignorada por telefone ruim
     erros: 0,
@@ -249,34 +254,54 @@ export async function POST(req: NextRequest) {
 
     // ========================================================================
     // 3. Carregar TODOS os leads existentes para índice em memória
-    //    (só precisamos de id/telefone/tags para reconciliar)
+    //    Campos: id, telefone (para match), nomewpp/regiao/tags (para reconciliar)
     // ========================================================================
     const { data: leadsExistentes, error: errLeads } = await client
       .from('dados_cliente')
-      .select('id, telefone, tags')
+      .select('id, telefone, nomewpp, regiao, tags')
       .limit(100_000);
 
     if (errLeads) throw new Error(`Falha ao listar leads: ${errLeads.message}`);
 
-    // Índice: qualquer variação de telefone → lead
-    const indiceTel = new Map<string, { id: number; tags: string[] | null }>();
+    // Índice: qualquer variação de telefone → lead (snapshot dos campos reconciliáveis)
+    type LeadSnapshot = { id: number; nomewpp: string | null; regiao: string | null; tags: string[] | null };
+    const indiceTel = new Map<string, LeadSnapshot>();
     for (const l of leadsExistentes || []) {
       if (!l.telefone) continue;
       for (const v of gerarVariacoesTel(l.telefone)) {
         if (!indiceTel.has(v)) {
-          indiceTel.set(v, { id: l.id, tags: l.tags || null });
+          indiceTel.set(v, {
+            id: l.id,
+            nomewpp: l.nomewpp || null,
+            regiao: l.regiao || null,
+            tags: l.tags || null,
+          });
         }
       }
     }
 
     // ========================================================================
-    // 4. Separar: quais criar, quais atualizar
+    // 4. Separar: quais criar vs. quais atualizar (e quais campos atualizar)
     // ========================================================================
+    type UpdatePlan = {
+      id: number;
+      novasTags?: string[];      // se presente, atualiza tags
+      novoNome?: string;          // se presente, atualiza nomewpp
+      novaRegiao?: string;        // se presente, atualiza regiao
+      addedTag: boolean;          // para estatística
+      changedName: boolean;
+      changedRegion: boolean;
+    };
+
     const paraCriar: LinhaPlanilha[] = [];
-    const paraAtualizar: Array<{ id: number; tag: string; tagsAtuais: string[] | null; regiao: string | null }> = [];
+    const paraAtualizar: UpdatePlan[] = [];
+
+    // Normaliza strings para comparação (trim + lowercase + remove acentos)
+    const normCompare = (s: string | null | undefined): string =>
+      (s || '').trim().normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
 
     for (const linha of linhasParsed) {
-      let achou: { id: number; tags: string[] | null } | null = null;
+      let achou: LeadSnapshot | null = null;
       for (const v of linha.variacoes) {
         const m = indiceTel.get(v);
         if (m) {
@@ -285,45 +310,65 @@ export async function POST(req: NextRequest) {
         }
       }
 
-      if (achou) {
-        const tagsAtuais = achou.tags || [];
-        if (tagsAtuais.includes(linha.tag)) {
-          relatorio.jaExistiaOK++;
-        } else {
-          paraAtualizar.push({
-            id: achou.id,
-            tag: linha.tag,
-            tagsAtuais,
-            regiao: linha.regiao,
-          });
-        }
-      } else {
+      if (!achou) {
         paraCriar.push(linha);
+        continue;
+      }
+
+      // Lead já existe — comparar campo a campo com a planilha
+      const tagsAtuais = achou.tags || [];
+      const plan: UpdatePlan = {
+        id: achou.id,
+        addedTag: false,
+        changedName: false,
+        changedRegion: false,
+      };
+      let algoMudou = false;
+
+      // Tag TP: adiciona se ainda não tem
+      if (!tagsAtuais.includes(linha.tag)) {
+        plan.novasTags = [...tagsAtuais, linha.tag];
+        plan.addedTag = true;
+        algoMudou = true;
+      }
+
+      // Nome: atualiza se planilha tem nome E difere do banco (comparação normalizada,
+      // evita atualizar só por maiúsculas/acentos)
+      if (linha.nome && normCompare(linha.nome) !== normCompare(achou.nomewpp)) {
+        plan.novoNome = linha.nome;
+        plan.changedName = true;
+        algoMudou = true;
+      }
+
+      // Região: atualiza se planilha tem região E difere do banco
+      if (linha.regiao && normCompare(linha.regiao) !== normCompare(achou.regiao)) {
+        plan.novaRegiao = linha.regiao;
+        plan.changedRegion = true;
+        algoMudou = true;
+      }
+
+      if (algoMudou) {
+        paraAtualizar.push(plan);
+      } else {
+        relatorio.jaExistiaOK++;
       }
     }
 
     console.log(
-      `[Reconciliar-TP] Split: ${paraCriar.length} para criar, ${paraAtualizar.length} para atualizar tag, ${relatorio.jaExistiaOK} já OK`
+      `[Reconciliar-TP] Split: ${paraCriar.length} para criar, ${paraAtualizar.length} para atualizar, ${relatorio.jaExistiaOK} já OK`
     );
 
     // ========================================================================
-    // 5. ATUALIZAR tags nos leads existentes (1 por 1 pra não perder tags)
+    // 5. ATUALIZAR leads existentes (1 por 1 para auditoria precisa)
     // ========================================================================
     for (const upd of paraAtualizar) {
       try {
-        const novasTags = [...(upd.tagsAtuais || []), upd.tag];
         const updatePayload: Record<string, any> = {
-          tags: novasTags,
           updated_at: new Date().toISOString(),
         };
-        // Só atualiza região se o lead não tinha (evita sobrescrever algo mais específico)
-        if (upd.regiao) {
-          // Nota: não sabemos se o lead já tem região; por segurança, só seta se vier
-          // da planilha. Se quiser evitar sobrescrever, pode buscar antes — mas pela
-          // característica do CRM, a região do lead costuma ser "cidade" genérica e
-          // a planilha TP tem o estado/cidade específico. Preferimos o da planilha.
-          updatePayload.regiao = upd.regiao;
-        }
+        if (upd.novasTags) updatePayload.tags = upd.novasTags;
+        if (upd.novoNome !== undefined) updatePayload.nomewpp = upd.novoNome;
+        if (upd.novaRegiao !== undefined) updatePayload.regiao = upd.novaRegiao;
 
         const { error } = await client
           .from('dados_cliente')
@@ -331,7 +376,10 @@ export async function POST(req: NextRequest) {
           .eq('id', upd.id);
 
         if (error) throw error;
-        relatorio.atualizadoTag++;
+
+        if (upd.addedTag) relatorio.atualizadoTag++;
+        if (upd.changedName) relatorio.atualizadoNome++;
+        if (upd.changedRegion) relatorio.atualizadoRegiao++;
       } catch (e: any) {
         relatorio.erros++;
         if (relatorio.errosDetalhes.length < 10) {
@@ -392,7 +440,8 @@ export async function POST(req: NextRequest) {
     console.log(
       `[Reconciliar-TP] Concluído em ${duracao}s | ` +
       `planilha=${relatorio.planilhaTotal} válidas=${relatorio.linhasTPValidas} ` +
-      `jaOK=${relatorio.jaExistiaOK} tagAdd=${relatorio.atualizadoTag} ` +
+      `jaOK=${relatorio.jaExistiaOK} ` +
+      `tagAdd=${relatorio.atualizadoTag} nomeUpd=${relatorio.atualizadoNome} regiaoUpd=${relatorio.atualizadoRegiao} ` +
       `criados=${relatorio.criado} erros=${relatorio.erros}`
     );
 
