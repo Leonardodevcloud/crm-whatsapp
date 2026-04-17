@@ -449,9 +449,15 @@ export async function GET(req: NextRequest) {
       });
 
       const comCad = casados.filter(x => x.cad && dentroDataRange(x.cad.data_cadastro));
-      const ativ   = comCad.filter(x =>
-        x.cad!.status_api === 'ativo' && dentroDataRange(x.cad!.data_ativacao)
-      );
+      // TP Ativados: status_api='ativo' é o critério principal.
+      // Se data_ativacao existir, exige que esteja no período.
+      // Se data_ativacao for null/vazio, aceita mesmo assim (alguns leads ativados
+      // na Mapp não tiveram data_ativacao gravada — o status é a fonte de verdade).
+      const ativ = comCad.filter(x => {
+        if (x.cad!.status_api !== 'ativo') return false;
+        if (!x.cad!.data_ativacao) return true; // sem data_ativacao → aceita se status='ativo'
+        return dentroDataRange(x.cad!.data_ativacao);
+      });
 
       const porRegiao: Record<string, number> = {};
       casados.forEach(x => {
