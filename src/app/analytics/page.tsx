@@ -5,7 +5,7 @@ import AuthLayout from '@/components/AuthLayout';
 import { useApi } from '@/lib/hooks';
 import {
   Users, UserCheck, UserPlus, TrendingUp, RefreshCw, Loader2, AlertCircle,
-  MapPin, Calendar, Skull, Sparkles, Truck, XCircle, Tag, Info, BarChart3, Zap,
+  MapPin, Calendar, Truck, XCircle, Tag, Info, BarChart3, Zap,
 } from 'lucide-react';
 
 function InfoTooltip({ text }: { text: string }) {
@@ -24,7 +24,7 @@ function InfoTooltip({ text }: { text: string }) {
 }
 
 interface AnalyticsData {
-  kpis: { totalCadastros: number; totalAtivos: number; totalAlocados: number; totalInativos: number; naoAtivados: number; mortos: number; ressuscitados: number; emOperacao: number; naoOperando: number; taxaConversao: number; taxaOperacao: number; taxaPerda: number };
+  kpis: { totalCadastros: number; totalAtivos: number; totalAlocados: number; totalInativos: number; naoAtivados: number; emOperacao: number; naoOperando: number; taxaConversao: number; taxaOperacao: number };
   funil: Array<{ stage: string; quantidade: number; cor: string; base: number }>;
   funilTP: Array<{ stage: string; quantidade: number; cor: string; base: number }>;
   conversaoOperacao: { leadsAtivados: number; emOperacao: number; naoOperando: number; taxaReal: number };
@@ -34,8 +34,6 @@ interface AnalyticsData {
   porOperador: Array<{ operador: string; quantidade: number }>;
   porOperadorAlocacao: Array<{ operador: string; quantidade: number }>;
   porDia: Array<{ data: string; cadastros: number; leadsCrm: number }>;
-  mortos: number;
-  ressuscitados: { total: number };
   filtros: { dataInicio: string; dataFim: string; regiao: string };
 }
 
@@ -199,13 +197,11 @@ function AnalyticsContent() {
         </div>
       </div>
 
-      {/* KPIs */}
-      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
+      {/* KPIs — Mortos/Ressuscitados removidos a pedido */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         <div className="card p-5"><div className="flex items-center gap-3"><div className="w-12 h-12 bg-purple-100 rounded-xl flex items-center justify-center"><Users className="w-6 h-6 text-purple-600" /></div><div><p className="text-3xl font-bold text-purple-600">{kpis.totalCadastros.toLocaleString()}</p><p className="text-xs text-gray-500">Total Cadastros</p><p className="text-xs text-gray-400 mt-0.5">Não ativados: {kpis.naoAtivados}</p></div></div></div>
         <div className="card p-5"><div className="flex items-center gap-3"><div className="w-12 h-12 bg-green-100 rounded-xl flex items-center justify-center"><UserCheck className="w-6 h-6 text-green-600" /></div><div><p className="text-3xl font-bold text-green-600">{kpis.totalAtivos.toLocaleString()}</p><p className="text-xs text-gray-500">Ativados</p><p className="text-xs text-green-500 mt-0.5">{kpis.taxaConversao}% conversão</p></div></div></div>
         <div className="card p-5"><div className="flex items-center gap-3"><div className="w-12 h-12 bg-violet-100 rounded-xl flex items-center justify-center"><UserPlus className="w-6 h-6 text-violet-600" /></div><div><p className="text-3xl font-bold text-violet-600">{kpis.totalAlocados?.toLocaleString() || 0}</p><p className="text-xs text-gray-500">Alocados</p></div></div></div>
-        <div className="card p-5"><div className="flex items-center gap-3"><div className="w-12 h-12 bg-gray-100 rounded-xl flex items-center justify-center"><Skull className="w-6 h-6 text-gray-500" /></div><div><p className="text-3xl font-bold text-gray-600">{kpis.mortos}</p><p className="text-xs text-gray-500">Mortos</p><p className="text-xs text-gray-400 mt-0.5">{kpis.taxaPerda}% perda</p></div></div></div>
-        <div className="card p-5"><div className="flex items-center gap-3"><div className="w-12 h-12 bg-pink-100 rounded-xl flex items-center justify-center"><Sparkles className="w-6 h-6 text-pink-600" /></div><div><p className="text-3xl font-bold text-pink-600">{kpis.ressuscitados}</p><p className="text-xs text-gray-500">Ressuscitados</p></div></div></div>
         <div className="card p-5"><div className="flex items-center gap-3"><div className="w-12 h-12 bg-blue-100 rounded-xl flex items-center justify-center"><Truck className="w-6 h-6 text-blue-600" /></div><div><p className="text-3xl font-bold text-blue-600">{kpis.emOperacao}</p><p className="text-xs text-gray-500">Em Operação</p><p className="text-xs text-blue-500 mt-0.5">{kpis.taxaOperacao}% taxa real</p></div></div></div>
       </div>
 
