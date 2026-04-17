@@ -131,11 +131,18 @@ export async function POST(req: NextRequest) {
     const client = supabaseAdmin || supabase;
 
     // ========================================================================
-    // 1. Baixar planilha TP
+    // 1. Baixar planilha TP (com cache busting pra pegar edições recentes)
     // ========================================================================
-    const resp = await fetch(PLANILHA_TP_URL, {
-      headers: { Accept: 'text/csv' },
+    const cb = Math.floor(Date.now() / 60_000);
+    const planilhaUrl = `${PLANILHA_TP_URL}&cachebust=${cb}`;
+    const resp = await fetch(planilhaUrl, {
+      headers: {
+        Accept: 'text/csv',
+        'Cache-Control': 'no-cache',
+        'Pragma': 'no-cache',
+      },
       signal: AbortSignal.timeout(15_000),
+      cache: 'no-store',
     });
     if (!resp.ok) {
       return NextResponse.json(
