@@ -94,11 +94,13 @@ export async function GET(req: NextRequest) {
 
     // ========================================================================
     // 1. Buscar em crm_leads_capturados
+    // CRÍTICO: limit default do backend é 50. Precisamos pedir TUDO pra
+    // conseguir achar o cadastro certo em uma base de 8000+ leads.
     // ========================================================================
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
     if (CRM_SERVICE_KEY) headers['x-service-key'] = CRM_SERVICE_KEY;
 
-    const leadsCapResp = await fetch(`${BACKEND_URL}/api/crm/leads-captura/`, {
+    const leadsCapResp = await fetch(`${BACKEND_URL}/api/crm/leads-captura/?page=1&limit=50000`, {
       headers,
       signal: AbortSignal.timeout(15_000),
     }).then(r => r.ok ? r.json() : null).catch(() => null);
