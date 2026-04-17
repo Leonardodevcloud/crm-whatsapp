@@ -200,7 +200,7 @@ export async function GET(req: NextRequest) {
     const mapaTPPlanilha = new Map<string, { tag: string; dataISO: string | null; regiao: string | null }>();
     // Lista de linhas ÚNICAS da planilha (por primeiro telefone canônico)
     // usada para contar TPs que existem NA PLANILHA mas NÃO no Supabase
-    type LinhaTPPlanilha = { telCanonico: string; tag: string; dataISO: string | null; regiao: string | null };
+    type LinhaTPPlanilha = { telCanonico: string; variacoes: string[]; tag: string; dataISO: string | null; regiao: string | null };
     const linhasPlanilhaTP: LinhaTPPlanilha[] = [];
     const telsCanonicosVistos = new Set<string>(); // dedup por 1ª variação
     try {
@@ -257,10 +257,11 @@ export async function GET(req: NextRequest) {
               }
             }
 
-            // Adiciona à lista deduplicada (1 entrada por telefone)
+            // Adiciona à lista deduplicada (1 entrada por telefone), guardando
+            // todas as variações para permitir match com o CRM depois
             if (telCanonico && !telsCanonicosVistos.has(telCanonico)) {
               telsCanonicosVistos.add(telCanonico);
-              linhasPlanilhaTP.push({ telCanonico, tag: tp.trim(), dataISO, regiao: regiaoRaw || null });
+              linhasPlanilhaTP.push({ telCanonico, variacoes, tag: tp.trim(), dataISO, regiao: regiaoRaw || null });
             }
           }
           console.log(`[Analytics] Planilha TP: ${mapaTPPlanilha.size} variações de telefone mapeadas | ${linhasPlanilhaTP.length} registros únicos`);
@@ -280,13 +281,36 @@ export async function GET(req: NextRequest) {
     const temTPBanco = (lead: any): boolean =>
       parseTags(lead.tags).some(t => /^TP/i.test(t));
 
+    // PRIMEIRO: filtrar linhas da planilha para só o período + filtro de região.
+    // Linhas sem data são DESCARTADAS (não podemos saber se são do período —
+    // antes essas linhas viravam false-positives em leads mais novos).
+    const linhasPlanilhaTPPeriodo = linhasPlanilhaTP.filter(r => {
+      if (!r.dataISO) return false;
+      return r.dataISO >= dataInicioStr && r.dataISO <= dataFimStr;
+    });
+
+    const linhasPlanilhaFiltradas = regiao
+      ? linhasPlanilhaTPPeriodo.filter(r => (r.regiao || '').toLowerCase().includes(regiao.toLowerCase()))
+      : linhasPlanilhaTPPeriodo;
+
+    // Set de telefones canônicos SÓ DAS LINHAS DA PLANILHA NO PERÍODO.
+    // Guarda TODAS as variações de cada telefone da planilha no período, para
+    // que um lead do CRM com variação diferente ainda consiga dar match.
+    const telsPlanilhaNoPeriodo = new Set<string>();
+    for (const r of linhasPlanilhaFiltradas) {
+      for (const v of (r.variacoes || [r.telCanonico])) {
+        telsPlanilhaNoPeriodo.add(v);
+      }
+    }
+
     const temTPPlanilha = (lead: any): boolean => {
       if (!lead.telefone) return false;
-      return gerarVariacoesTel(lead.telefone).some(v => mapaTPPlanilha.has(v));
+      const variacoes = gerarVariacoesTel(lead.telefone);
+      // Match apenas com linhas da planilha NO PERÍODO (não na planilha inteira)
+      return variacoes.some(v => telsPlanilhaNoPeriodo.has(v));
     };
 
-    // Helper: pega o telefone canônico do lead (1ª variação) — se o lead não
-    // tiver telefone, usa o id pra não ter colisão espúria no dedup.
+    // Helper: pega o telefone canônico do lead (1ª variação)
     const telCanonicoLead = (lead: any): string => {
       if (!lead.telefone) return `lead:${lead.id}`;
       const v = gerarVariacoesTel(lead.telefone);
@@ -296,18 +320,7 @@ export async function GET(req: NextRequest) {
     // 1. Leads TP do CRM no período (created_at em [dataInicio, dataFim])
     const leadsCrmTP = leadsCrmNoPeriodo.filter(l => temTPBanco(l) || temTPPlanilha(l));
 
-    // 2. Linhas da planilha TP no período (coluna `data` em [dataInicio, dataFim])
-    const linhasPlanilhaTPPeriodo = linhasPlanilhaTP.filter(r => {
-      if (!r.dataISO) return false; // sem data → não consegue saber se é do período
-      return r.dataISO >= dataInicioStr && r.dataISO <= dataFimStr;
-    });
-
-    // Respeita filtro de região para o universo "planilha" (case-insensitive)
-    const linhasPlanilhaFiltradas = regiao
-      ? linhasPlanilhaTPPeriodo.filter(r => (r.regiao || '').toLowerCase().includes(regiao.toLowerCase()))
-      : linhasPlanilhaTPPeriodo;
-
-    // 3. Dedup por telefone canônico: se o telefone da planilha já veio pelo
+    // 2. Dedup por telefone canônico: se o telefone da planilha já veio pelo
     //    CRM (leadsCrmTP), não conta de novo. Só entram na união os telefones
     //    da planilha que NÃO estão representados no CRM no período.
     const telsCRMPeriodo = new Set(leadsCrmTP.map(telCanonicoLead));
