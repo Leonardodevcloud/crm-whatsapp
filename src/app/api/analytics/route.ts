@@ -196,8 +196,13 @@ export async function GET(req: NextRequest) {
       return out;
     };
 
-    // Map telefone(variação) → { tag, data? }
-    const mapaTPPlanilha = new Map<string, { tag: string; dataISO: string | null }>();
+    // Map telefone(variação) → { tag, data?, regiao? }
+    const mapaTPPlanilha = new Map<string, { tag: string; dataISO: string | null; regiao: string | null }>();
+    // Lista de linhas ÚNICAS da planilha (por primeiro telefone canônico)
+    // usada para contar TPs que existem NA PLANILHA mas NÃO no Supabase
+    type LinhaTPPlanilha = { telCanonico: string; tag: string; dataISO: string | null; regiao: string | null };
+    const linhasPlanilhaTP: LinhaTPPlanilha[] = [];
+    const telsCanonicosVistos = new Set<string>(); // dedup por 1ª variação
     try {
       const resp = await fetch(PLANILHA_TP_URL, { headers: { Accept: 'text/csv' }, signal: AbortSignal.timeout(8000) });
       if (resp.ok) {
@@ -214,8 +219,12 @@ export async function GET(req: NextRequest) {
           );
           const colPhone = headers.findIndex(h => h === 'phone' || h === 'telefone');
           const colTp    = headers.findIndex(h => h === 'tp');
+          // Coluna de região/estado/cidade (opcional)
+          const colRegiao = headers.findIndex(h =>
+            h === 'estado ou cidade' || h === 'estado' || h === 'cidade' || h === 'regiao' || h === 'região'
+          );
 
-          console.log(`[Analytics] Planilha TP: headers=${JSON.stringify(headers)} | colData=${colData} colPhone=${colPhone} colTp=${colTp}`);
+          console.log(`[Analytics] Planilha TP: headers=${JSON.stringify(headers)} | colData=${colData} colPhone=${colPhone} colTp=${colTp} colRegiao=${colRegiao}`);
 
           for (let i = 1; i < linhas.length; i++) {
             if (!linhas[i].trim()) continue;
@@ -223,6 +232,7 @@ export async function GET(req: NextRequest) {
             const tel = colPhone >= 0 ? vals[colPhone] : '';
             const tp  = colTp    >= 0 ? vals[colTp]    : '';
             const dataRaw = colData >= 0 ? vals[colData] : '';
+            const regiaoRaw = colRegiao >= 0 ? vals[colRegiao] : '';
             if (!tel || !tp || !/^TP/i.test(tp)) continue;
 
             // Converter data BR (DD/MM/YYYY) ou ISO (YYYY-MM-DD) para ISO
@@ -237,12 +247,23 @@ export async function GET(req: NextRequest) {
               }
             }
 
-            for (const v of gerarVariacoesTel(tel)) {
-              // Preserva a 1ª ocorrência (planilha pode ter duplicadas)
-              if (!mapaTPPlanilha.has(v)) mapaTPPlanilha.set(v, { tag: tp.trim(), dataISO });
+            const variacoes = gerarVariacoesTel(tel);
+            const telCanonico = variacoes[0] || normalizarTel(tel);
+
+            // Adiciona ao mapa (todas variações)
+            for (const v of variacoes) {
+              if (!mapaTPPlanilha.has(v)) {
+                mapaTPPlanilha.set(v, { tag: tp.trim(), dataISO, regiao: regiaoRaw || null });
+              }
+            }
+
+            // Adiciona à lista deduplicada (1 entrada por telefone)
+            if (telCanonico && !telsCanonicosVistos.has(telCanonico)) {
+              telsCanonicosVistos.add(telCanonico);
+              linhasPlanilhaTP.push({ telCanonico, tag: tp.trim(), dataISO, regiao: regiaoRaw || null });
             }
           }
-          console.log(`[Analytics] Planilha TP: ${mapaTPPlanilha.size} variações de telefone mapeadas`);
+          console.log(`[Analytics] Planilha TP: ${mapaTPPlanilha.size} variações de telefone mapeadas | ${linhasPlanilhaTP.length} registros únicos`);
         }
       } else {
         console.log(`[Analytics] Planilha TP HTTP ${resp.status}`);
@@ -251,11 +272,11 @@ export async function GET(req: NextRequest) {
       console.log(`[Analytics] Planilha TP falhou (usando só banco): ${e.message}`);
     }
 
-    // ─── TP no período: universo = (banco ∪ planilha) ────────────────────────
-    // Para cada lead cadastrado no período, checa:
-    //   a) tem tag TP em dados_cliente.tags (banco)? → conta
-    //   b) OU telefone bate com planilha TP? → conta (mesmo sem tag no banco)
-    // Isso pega os leads recentes que ainda não foram enriquecidos.
+    // ─── TP no período: UNIÃO (CRM no período ∪ planilha no período) ────────
+    // Definição: "Leads TP do mês" = leads do CRM cadastrados no período que
+    // são TP + linhas da planilha TP cuja `data` está no período.
+    // Deduplicação por telefone canônico — se o mesmo telefone aparece no CRM
+    // e na planilha, conta UMA vez.
     const temTPBanco = (lead: any): boolean =>
       parseTags(lead.tags).some(t => /^TP/i.test(t));
 
@@ -264,19 +285,67 @@ export async function GET(req: NextRequest) {
       return gerarVariacoesTel(lead.telefone).some(v => mapaTPPlanilha.has(v));
     };
 
-    // Filtro de período usa o created_at do lead (consistente com demais KPIs)
-    const leadsComTP = leadsCrmNoPeriodo.filter(l => temTPBanco(l) || temTPPlanilha(l));
-    const leadsTPComCadastro = leadsComTP.filter(l => l.cod_profissional);
-    const leadsTPAtivados = leadsTPComCadastro.filter(l => codsAtivosSet.has(String(l.cod_profissional)));
+    // Helper: pega o telefone canônico do lead (1ª variação) — se o lead não
+    // tiver telefone, usa o id pra não ter colisão espúria no dedup.
+    const telCanonicoLead = (lead: any): string => {
+      if (!lead.telefone) return `lead:${lead.id}`;
+      const v = gerarVariacoesTel(lead.telefone);
+      return v[0] || `lead:${lead.id}`;
+    };
 
-    // Log comparativo para debug
-    const tpSoBanco     = leadsCrmNoPeriodo.filter(l => temTPBanco(l) && !temTPPlanilha(l)).length;
-    const tpSoPlanilha  = leadsCrmNoPeriodo.filter(l => !temTPBanco(l) && temTPPlanilha(l)).length;
-    const tpAmbos       = leadsCrmNoPeriodo.filter(l => temTPBanco(l) &&  temTPPlanilha(l)).length;
-    console.log(`[Analytics] TP no período: total=${leadsComTP.length} (só banco=${tpSoBanco}, só planilha=${tpSoPlanilha}, ambos=${tpAmbos})`);
+    // 1. Leads TP do CRM no período (created_at em [dataInicio, dataFim])
+    const leadsCrmTP = leadsCrmNoPeriodo.filter(l => temTPBanco(l) || temTPPlanilha(l));
+
+    // 2. Linhas da planilha TP no período (coluna `data` em [dataInicio, dataFim])
+    const linhasPlanilhaTPPeriodo = linhasPlanilhaTP.filter(r => {
+      if (!r.dataISO) return false; // sem data → não consegue saber se é do período
+      return r.dataISO >= dataInicioStr && r.dataISO <= dataFimStr;
+    });
+
+    // Respeita filtro de região para o universo "planilha" (case-insensitive)
+    const linhasPlanilhaFiltradas = regiao
+      ? linhasPlanilhaTPPeriodo.filter(r => (r.regiao || '').toLowerCase().includes(regiao.toLowerCase()))
+      : linhasPlanilhaTPPeriodo;
+
+    // 3. Dedup por telefone canônico: se o telefone da planilha já veio pelo
+    //    CRM (leadsCrmTP), não conta de novo. Só entram na união os telefones
+    //    da planilha que NÃO estão representados no CRM no período.
+    const telsCRMPeriodo = new Set(leadsCrmTP.map(telCanonicoLead));
+    const linhasPlanilhaNovas = linhasPlanilhaFiltradas.filter(r =>
+      r.telCanonico && !telsCRMPeriodo.has(r.telCanonico)
+    );
+
+    // Total unificado
+    const totalTPUniao = leadsCrmTP.length + linhasPlanilhaNovas.length;
+
+    // "leadsComTP" agora é um array híbrido (usado só para regiões abaixo)
+    type TPItem = { origem: 'crm' | 'planilha'; regiao: string | null; cod_profissional?: string | null };
+    const leadsComTP: TPItem[] = [
+      ...leadsCrmTP.map((l): TPItem => ({ origem: 'crm', regiao: l.regiao || null, cod_profissional: l.cod_profissional || null })),
+      ...linhasPlanilhaNovas.map((r): TPItem => ({ origem: 'planilha', regiao: r.regiao || null, cod_profissional: null })),
+    ];
+
+    // TP com cadastro / ativados / em operação: só faz sentido para leads do CRM
+    // (linhas só-planilha não tem cod_profissional para cruzar)
+    const leadsTPComCadastro = leadsCrmTP.filter(l => l.cod_profissional);
+    const leadsTPAtivados    = leadsTPComCadastro.filter(l => codsAtivosSet.has(String(l.cod_profissional)));
+
+    // Logs de debug
+    const tpSoBanco    = leadsCrmNoPeriodo.filter(l => temTPBanco(l) && !temTPPlanilha(l)).length;
+    const tpSoPlanilha = leadsCrmNoPeriodo.filter(l => !temTPBanco(l) && temTPPlanilha(l)).length;
+    const tpAmbos      = leadsCrmNoPeriodo.filter(l => temTPBanco(l) &&  temTPPlanilha(l)).length;
+    console.log(
+      `[Analytics] TP período: CRM=${leadsCrmTP.length} (banco=${tpSoBanco}+planilha=${tpSoPlanilha}+ambos=${tpAmbos}) | ` +
+      `PlanilhaPeriodo=${linhasPlanilhaFiltradas.length} | ` +
+      `Novas_da_planilha(não no CRM)=${linhasPlanilhaNovas.length} | ` +
+      `TOTAL_UNIÃO=${totalTPUniao}`
+    );
 
     const tpPorRegiao: Record<string, number> = {};
-    leadsComTP.forEach(l => { const reg = (l.regiao || 'SEM REGIÃO').toUpperCase(); tpPorRegiao[reg] = (tpPorRegiao[reg] || 0) + 1; });
+    leadsComTP.forEach(item => {
+      const reg = (item.regiao && String(item.regiao).trim()) || 'SEM REGIÃO';
+      tpPorRegiao[reg.toUpperCase()] = (tpPorRegiao[reg.toUpperCase()] || 0) + 1;
+    });
 
     // Mortos/ressuscitados removidos do analytics conforme solicitação
     // (conceitos seguem existindo no kanban, cron de enriquecimento e types)
@@ -363,10 +432,13 @@ export async function GET(req: NextRequest) {
           { stage: 'Em Operação', quantidade: emOperacao, cor: '#3B82F6', base: totalCadastros },
         ],
         funilTP: [
+          // Total TP = CRM no período + linhas da planilha no período (dedup por tel)
           { stage: 'Leads com Tag TP', quantidade: leadsComTP.length, cor: '#8B5CF6', base: leadsComTP.length },
-          { stage: 'TP com Cadastro', quantidade: leadsTPComCadastro.length, cor: '#F59E0B', base: leadsComTP.length },
-          { stage: 'TP Ativados', quantidade: leadsTPAtivados.length, cor: '#22C55E', base: leadsTPComCadastro.length },
-          { stage: 'TP em Operação', quantidade: tpEmOperacao, cor: '#10B981', base: leadsTPAtivados.length },
+          // Etapas seguintes só fazem sentido para leads do CRM (linhas só-planilha
+          // não têm cod_profissional). Base = total TP do CRM (leadsCrmTP).
+          { stage: 'TP com Cadastro', quantidade: leadsTPComCadastro.length, cor: '#F59E0B', base: leadsCrmTP.length || 1 },
+          { stage: 'TP Ativados',     quantidade: leadsTPAtivados.length,    cor: '#22C55E', base: leadsTPComCadastro.length || 1 },
+          { stage: 'TP em Operação',  quantidade: tpEmOperacao,               cor: '#10B981', base: leadsTPAtivados.length || 1 },
         ],
         conversaoOperacao: { leadsAtivados: totalAtivos, emOperacao, naoOperando: totalAtivos - emOperacao, taxaReal: taxaOperacao },
         porRegiao: Object.entries(ativadosPorRegiao).map(([r, q]) => ({ regiao: r, quantidade: q })).sort((a, b) => b.quantidade - a.quantidade),
