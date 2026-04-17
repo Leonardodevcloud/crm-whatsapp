@@ -579,20 +579,30 @@ function AnalyticsContent() {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <div className="card p-5">
           <h3 className="text-lg font-bold text-gray-800 flex items-center gap-2 mb-4"><Zap className="w-5 h-5 text-green-600" /> Ativações por Operador</h3>
-          <div className="space-y-3 max-h-96 overflow-y-auto">
+          <div className="space-y-3 max-h-96 overflow-y-auto pr-6" style={{ scrollbarGutter: 'stable' }}>
             {porOperador.map((item, i) => { const maxO = porOperador[0]?.quantidade || 1; return (
-              <div key={item.operador}><div className="flex justify-between items-center mb-1"><span className="text-sm font-medium text-gray-700">{i + 1}. {item.operador}</span><span className="text-sm font-bold">{item.quantidade}</span></div>
-                <div className="w-full bg-gray-100 rounded-full h-6 overflow-hidden"><div className="h-full rounded-full" style={{ width: `${(item.quantidade / maxO) * 100}%`, backgroundColor: COLORS[i % COLORS.length] }} /></div></div>
+              <div key={item.operador}>
+                <div className="flex justify-between items-center mb-1 gap-3">
+                  <span className="text-sm font-medium text-gray-700 truncate" title={item.operador}>{i + 1}. {item.operador}</span>
+                  <span className="text-sm font-bold tabular-nums flex-shrink-0 whitespace-nowrap">{item.quantidade.toLocaleString()}</span>
+                </div>
+                <div className="w-full bg-gray-100 rounded-full h-6 overflow-hidden"><div className="h-full rounded-full" style={{ width: `${(item.quantidade / maxO) * 100}%`, backgroundColor: COLORS[i % COLORS.length] }} /></div>
+              </div>
             ); })}
             {porOperador.length === 0 && <p className="text-gray-400 text-center py-8">Sem dados</p>}
           </div>
         </div>
         <div className="card p-5">
           <h3 className="text-lg font-bold text-gray-800 flex items-center gap-2 mb-4"><UserPlus className="w-5 h-5 text-violet-600" /> Alocações por Operador</h3>
-          <div className="space-y-3 max-h-96 overflow-y-auto">
+          <div className="space-y-3 max-h-96 overflow-y-auto pr-6" style={{ scrollbarGutter: 'stable' }}>
             {(porOperadorAlocacao || []).map((item, i) => { const maxO = (porOperadorAlocacao || [])[0]?.quantidade || 1; return (
-              <div key={item.operador}><div className="flex justify-between items-center mb-1"><span className="text-sm font-medium text-gray-700">{i + 1}. {item.operador}</span><span className="text-sm font-bold">{item.quantidade}</span></div>
-                <div className="w-full bg-gray-100 rounded-full h-6 overflow-hidden"><div className="h-full rounded-full" style={{ width: `${(item.quantidade / maxO) * 100}%`, backgroundColor: ['#8B5CF6','#7C3AED','#6D28D9','#5B21B6','#4C1D95'][i % 5] }} /></div></div>
+              <div key={item.operador}>
+                <div className="flex justify-between items-center mb-1 gap-3">
+                  <span className="text-sm font-medium text-gray-700 truncate" title={item.operador}>{i + 1}. {item.operador}</span>
+                  <span className="text-sm font-bold tabular-nums flex-shrink-0 whitespace-nowrap">{item.quantidade.toLocaleString()}</span>
+                </div>
+                <div className="w-full bg-gray-100 rounded-full h-6 overflow-hidden"><div className="h-full rounded-full" style={{ width: `${(item.quantidade / maxO) * 100}%`, backgroundColor: ['#8B5CF6','#7C3AED','#6D28D9','#5B21B6','#4C1D95'][i % 5] }} /></div>
+              </div>
             ); })}
             {(!porOperadorAlocacao || porOperadorAlocacao.length === 0) && <p className="text-gray-400 text-center py-8">Sem dados</p>}
           </div>
