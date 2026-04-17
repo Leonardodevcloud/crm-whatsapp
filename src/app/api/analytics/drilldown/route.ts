@@ -309,23 +309,26 @@ export async function POST(req: NextRequest) {
           .filter(r => r.cadastro && dentroDoPeriodo(r.cadastro.data_cadastro))
           .map(r => tpItemToExport(r));
       } else if (stageLower.includes('tp ativados') || stageLower === 'ativados') {
-        // Cadastrado E ativado no período E status ativo
+        // Cadastrado no período + status_api='ativo'. Se data_ativacao existir,
+        // respeita período; se for null, aceita (alinhado ao analytics).
         resultado = tpComCadastro
-          .filter(r =>
-            r.cadastro &&
-            dentroDoPeriodo(r.cadastro.data_cadastro) &&
-            r.cadastro.status_api === 'ativo' &&
-            dentroDoPeriodo(r.cadastro.data_ativacao)
-          )
+          .filter(r => {
+            if (!r.cadastro) return false;
+            if (!dentroDoPeriodo(r.cadastro.data_cadastro)) return false;
+            if (r.cadastro.status_api !== 'ativo') return false;
+            if (!r.cadastro.data_ativacao) return true;
+            return dentroDoPeriodo(r.cadastro.data_ativacao);
+          })
           .map(r => tpItemToExport(r));
       } else if (stageLower.includes('tp em operação') || stageLower.includes('em operacao')) {
-        // Ativados + em operação no período
-        const ativados = tpComCadastro.filter(r =>
-          r.cadastro &&
-          dentroDoPeriodo(r.cadastro.data_cadastro) &&
-          r.cadastro.status_api === 'ativo' &&
-          dentroDoPeriodo(r.cadastro.data_ativacao)
-        );
+        // Ativados (mesma regra relaxada) + em operação no período
+        const ativados = tpComCadastro.filter(r => {
+          if (!r.cadastro) return false;
+          if (!dentroDoPeriodo(r.cadastro.data_cadastro)) return false;
+          if (r.cadastro.status_api !== 'ativo') return false;
+          if (!r.cadastro.data_ativacao) return true;
+          return dentroDoPeriodo(r.cadastro.data_ativacao);
+        });
         // Checar operação via endpoint
         const leadsForm = ativados
           .filter(r => r.cadastro && r.cadastro.cod)
