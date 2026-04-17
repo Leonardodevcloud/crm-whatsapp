@@ -511,20 +511,31 @@ export async function GET(req: NextRequest) {
       const codsTPAtivosAtuais = funilAtual.ativadosItens.map(i => i.cod_profissional).filter(Boolean);
       const codsTPAtivos90d    = funil90d.ativadosItens.map(i => i.cod_profissional).filter(Boolean);
 
-      if (codigosAtivos.length > 0) {
+      // UNIÃO: consulta operação para conversão + TP atual. Crucial pra quando
+      // um TP Ativado tem status='ativo' mas data_ativacao=null → ele não está
+      // em leadsPorAtivacao (que exige data_ativacao no período), mas PODE estar
+      // rodando em bi_entregas. Sem essa união, ele nunca entra em tpEmOperacao.
+      const codigosParaVerificarAtual = Array.from(new Set([...codigosAtivos, ...codsTPAtivosAtuais]));
+
+      if (codigosParaVerificarAtual.length > 0) {
         const biResult = await fetch(`${BI_API_URL}/api/crm/verificar-operacao`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', ...(CRM_SERVICE_KEY ? { 'x-service-key': CRM_SERVICE_KEY } : {}) },
           // Intervalo fixo: conta entregas dentro do período selecionado no filtro
-          body: JSON.stringify({ codigos: codigosAtivos, data_inicio: dataInicioStr, data_fim: dataFimStr }),
+          body: JSON.stringify({ codigos: codigosParaVerificarAtual, data_inicio: dataInicioStr, data_fim: dataFimStr }),
         }).then(r => r.json()).catch(() => null);
-
-        emOperacao = biResult?.em_operacao ?? 0;
 
         if (biResult?.resultado) {
           codsEmOperacaoSet = new Set(biResult.resultado.filter((r: any) => r.em_operacao).map((r: any) => String(r.cod_profissional)));
+
+          // "emOperacao" do funil de conversão só conta códigos que estão em leadsPorAtivacao
+          // (manter compat: o KPI principal só considera ativados tradicionais).
+          const setAtivadosConv = new Set(codigosAtivos);
+          emOperacao = Array.from(codsEmOperacaoSet).filter(c => setAtivadosConv.has(c)).length;
+
+          // "tpEmOperacao" conta códigos que são TP Ativados (inclusive sem data_ativacao)
           const codsTPAtivados = new Set<string>(leadsTPAtivados.map((l: any) => String(l.cod_profissional)));
-          tpEmOperacao = Array.from(codsTPAtivados).filter((c: string) => codsEmOperacaoSet.has(c)).length;
+          tpEmOperacao = Array.from(codsTPAtivados).filter(c => codsEmOperacaoSet.has(c)).length;
         }
       }
 
