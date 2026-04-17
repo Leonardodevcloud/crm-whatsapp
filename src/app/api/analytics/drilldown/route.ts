@@ -464,15 +464,15 @@ async function buscarEmOperacao(
 
   const mapaLeads = new Map(leads.map(l => [String(l.cod), l]));
   const exports: LeadExport[] = [];
-  for (const [cod, dados] of mapaEntregas) {
+  mapaEntregas.forEach((dados, cod) => {
     const lead = mapaLeads.get(cod);
-    if (!lead) continue;
+    if (!lead) return;
     const exp = toLeadExport(lead);
     exp.em_operacao = true;
     exp.total_entregas = Number(dados.total_entregas) || null;
     exp.ultima_entrega = dados.ultima_entrega || null;
     exports.push(exp);
-  }
+  });
   return exports;
 }
 
