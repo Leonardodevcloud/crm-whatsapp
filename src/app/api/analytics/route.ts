@@ -77,11 +77,19 @@ export async function GET(req: NextRequest) {
       if (l.regiao) ativadosPorRegiao[l.regiao] = (ativadosPorRegiao[l.regiao] || 0) + 1;
     });
 
-    // Não ativados por região (cadastros no período que não são ativos)
+    // Não ativados por região
+    // FIX: antes contava `leadsPorCadastro.filter(status_api !== 'ativo')` — isso
+    // dava número diferente do KPI principal (341) porque um lead cadastrado em
+    // março e ativado em abril aparecia como "ativo" no status_api mas o KPI
+    // principal o contava como não-ativado (pois subtrai totalAtivos do período).
+    // Agora usa a MESMA lógica do KPI: cadastrado no período E não presente no
+    // conjunto de ativados do período.
     const naoAtivadosPorRegiao: Record<string, number> = {};
-    leadsPorCadastro.filter((l: any) => l.status_api !== 'ativo').forEach((l: any) => {
-      if (l.regiao) naoAtivadosPorRegiao[l.regiao] = (naoAtivadosPorRegiao[l.regiao] || 0) + 1;
-    });
+    leadsPorCadastro
+      .filter((l: any) => !codsAtivosSet.has(String(l.cod)))
+      .forEach((l: any) => {
+        if (l.regiao) naoAtivadosPorRegiao[l.regiao] = (naoAtivadosPorRegiao[l.regiao] || 0) + 1;
+      });
 
     // Operador (ativados por data_ativacao)
     const ativacoesPorOperador: Record<string, number> = {};
@@ -106,10 +114,12 @@ export async function GET(req: NextRequest) {
     });
 
     // ═══ 2. CRM SUPABASE (tags TP, mortos, ressuscitados) ═══
+    // FIX: antes só trazia leads com status='ativo'. Isso excluía muitos TP
+    // legítimos (leads pausados, em fechamento, etc.). Agora trazemos SEM
+    // filtro de status para contagem de tags TP ser abrangente.
     const { data: allLeads } = await client
       .from('dados_cliente')
-      .select('id, stage, regiao, tags, created_at, updated_at, ressuscitado_em, vezes_ressuscitado, cod_profissional')
-      .eq('status', 'ativo')
+      .select('id, stage, status, regiao, tags, created_at, updated_at, ressuscitado_em, vezes_ressuscitado, cod_profissional')
       .limit(50000);
 
     const leadsCrmNoPeriodo = (allLeads || []).filter(lead => {
@@ -120,21 +130,58 @@ export async function GET(req: NextRequest) {
       return true;
     });
 
+    // FIX: parser de tags mais robusto — aceita array, JSON array string,
+    // formato postgres {a,b,c}, string simples, e ignora valores vazios/nulos
     const parseTags = (tags: any): string[] => {
-      if (Array.isArray(tags)) return tags;
+      if (!tags) return [];
+      if (Array.isArray(tags)) return tags.map(t => String(t).trim()).filter(Boolean);
+      if (typeof tags === 'object') {
+        // Pode vir como objeto JSON do postgres
+        try {
+          const vals = Object.values(tags).flat();
+          return vals.map((t: any) => String(t).trim()).filter(Boolean);
+        } catch { return []; }
+      }
       if (typeof tags === 'string') {
         const str = tags.trim();
-        if (str.startsWith('{') && str.endsWith('}')) return str.slice(1, -1).split(',').map(t => t.trim()).filter(Boolean);
-        if (str) return [str];
+        if (!str) return [];
+        // Formato postgres: {tag1,tag2,"tag com espaço"}
+        if (str.startsWith('{') && str.endsWith('}')) {
+          return str.slice(1, -1)
+            .split(',')
+            .map(t => t.trim().replace(/^"|"$/g, ''))
+            .filter(Boolean);
+        }
+        // Formato JSON array: ["tag1","tag2"]
+        if (str.startsWith('[') && str.endsWith(']')) {
+          try {
+            const arr = JSON.parse(str);
+            if (Array.isArray(arr)) return arr.map(t => String(t).trim()).filter(Boolean);
+          } catch { /* fallback abaixo */ }
+        }
+        // String simples
+        return [str];
       }
       return [];
     };
 
-    // TP: Leads com tag TP → com cadastro → ATIVADOS → em operação
-    const leadsComTP = leadsCrmNoPeriodo.filter(l => parseTags(l.tags).some(t => t.startsWith('TP')));
+    // FIX: TP agora busca no universo inteiro (não só no período), porque tag
+    // TP representa origem do lead — não expira com o tempo. Respeita região
+    // se informada.
+    const todosLeadsCrm = (allLeads || []).filter(lead => {
+      if (regiao && lead.regiao !== regiao) return false;
+      return true;
+    });
+
+    // TP: Leads com tag TP (universo total) → com cadastro → ATIVADOS → em operação
+    const leadsComTP = todosLeadsCrm.filter(l => parseTags(l.tags).some(t => /^TP/i.test(t)));
     const leadsTPComCadastro = leadsComTP.filter(l => l.cod_profissional);
     // TP Ativados = TP com cadastro cujo código está ativo no crm_leads_capturados
-    const leadsTPAtivados = leadsTPComCadastro.filter(l => codsAtivosSet.has(String(l.cod_profissional)));
+    // Aqui usamos o set de TODOS os ativos (não só do período) pra não subestimar
+    const codsAtivosGlobalSet = new Set(
+      todosLeads.filter((l: any) => l.status_api === 'ativo').map((l: any) => String(l.cod))
+    );
+    const leadsTPAtivados = leadsTPComCadastro.filter(l => codsAtivosGlobalSet.has(String(l.cod_profissional)));
 
     const tpPorRegiao: Record<string, number> = {};
     leadsComTP.forEach(l => { const reg = (l.regiao || 'Sem região').toUpperCase(); tpPorRegiao[reg] = (tpPorRegiao[reg] || 0) + 1; });
@@ -142,14 +189,8 @@ export async function GET(req: NextRequest) {
     const leadsPorTag: Record<string, number> = {};
     leadsCrmNoPeriodo.forEach(lead => { parseTags(lead.tags).forEach(tag => { if (tag) leadsPorTag[tag.trim()] = (leadsPorTag[tag.trim()] || 0) + 1; }); });
 
-    const leadsMortos = leadsCrmNoPeriodo.filter(l => l.stage === 'lead_morto');
-    const ressuscitados = (allLeads || []).filter(l => {
-      if (!l.ressuscitado_em) return false;
-      const dt = new Date(l.ressuscitado_em);
-      if (dt < dataLimiteInicio || dt > dataLimiteFim) return false;
-      if (regiao && l.regiao !== regiao) return false;
-      return true;
-    });
+    // Mortos/ressuscitados removidos do analytics conforme solicitação
+    // (conceitos seguem existindo no kanban, cron de enriquecimento e types)
 
     const leadsCrmPorDia: Record<string, number> = {};
     Object.keys(cadastrosPorDia).forEach(k => { leadsCrmPorDia[k] = 0; });
@@ -172,27 +213,34 @@ export async function GET(req: NextRequest) {
 
         if (biResult?.resultado) {
           codsEmOperacaoSet = new Set(biResult.resultado.filter((r: any) => r.em_operacao).map((r: any) => String(r.cod_profissional)));
-          const codsTPAtivados = new Set(leadsTPAtivados.map(l => String(l.cod_profissional)));
-          tpEmOperacao = Array.from(codsTPAtivados).filter(c => codsEmOperacaoSet.has(c)).length;
+          const codsTPAtivados = new Set<string>(leadsTPAtivados.map((l: any) => String(l.cod_profissional)));
+          tpEmOperacao = Array.from(codsTPAtivados).filter((c: string) => codsEmOperacaoSet.has(c)).length;
         }
       }
     } catch (err: any) { console.error('[Analytics] Erro BI:', err.message); }
 
     // ═══ 4. ALOCAÇÕES (mesmo período) ═══
+    // FIX: antes tinha `importado=false`, o que excluía todas as alocações
+    // importadas da Google Sheet — o KPI só contava alocações criadas pela UI.
+    // Agora conta TODAS (manuais + importadas) para bater com a realidade.
     let totalAlocados = 0;
     let alocacoesPorOperador: Record<string, number> = {};
     try {
-      const alocResp = await fetch(`${BI_API_URL}/api/crm/alocacao?limit=50000&todos=true&importado=false`, {
+      const alocResp = await fetch(`${BI_API_URL}/api/crm/alocacao?limit=50000&todos=true`, {
         headers: { 'Content-Type': 'application/json', ...(CRM_SERVICE_KEY ? { 'x-service-key': CRM_SERVICE_KEY } : {}) },
       }).then(r => r.json()).catch(() => ({ success: false, data: [] }));
 
       const todasAlocacoes: any[] = alocResp?.data || [];
 
-      // Filtrar alocações manuais do período
+      // Filtrar alocações pelo período — usa created_at (quando foi alocado no CRM)
       const alocacoesPeriodo = todasAlocacoes.filter((a: any) => {
         if (!a.created_at) return false;
         const d = a.created_at.split('T')[0];
-        return d >= dataInicioStr && d <= dataFimStr;
+        if (d < dataInicioStr || d > dataFimStr) return false;
+        // Se veio filtro de região, respeita (buscar via lead correspondente é
+        // caro; por enquanto o endpoint de alocação não retorna região, então
+        // filtro de região NÃO é aplicado nas alocações — comportamento anterior).
+        return true;
       });
 
       totalAlocados = alocacoesPeriodo.length;
@@ -203,7 +251,7 @@ export async function GET(req: NextRequest) {
         alocacoesPorOperador[op] = (alocacoesPorOperador[op] || 0) + 1;
       });
 
-      console.log(`[Analytics] Alocações período: ${totalAlocados}`);
+      console.log(`[Analytics] Alocações período (todas, manuais+importadas): ${totalAlocados} de ${todasAlocacoes.length} total`);
     } catch (err: any) { console.error('[Analytics] Erro alocações:', err.message); }
 
     // ═══ RESPOSTA ═══
@@ -211,17 +259,19 @@ export async function GET(req: NextRequest) {
     const taxaConversao = totalCadastros > 0 ? Math.round((totalAtivos / totalCadastros) * 100) : 0;
     // Em Operação % baseado nos ATIVADOS (não no total)
     const taxaOperacao = totalAtivos > 0 ? Math.round((emOperacao / totalAtivos) * 100) : 0;
-    const taxaPerda = leadsCrmNoPeriodo.length > 0 ? Math.round((leadsMortos.length / leadsCrmNoPeriodo.length) * 100) : 0;
 
     return NextResponse.json({
       success: true,
       data: {
-        kpis: { totalCadastros, totalAtivos, totalAlocados, totalInativos, naoAtivados, mortos: leadsMortos.length, ressuscitados: ressuscitados.length, emOperacao, naoOperando: totalAtivos - emOperacao, taxaConversao, taxaOperacao, taxaPerda },
+        kpis: { totalCadastros, totalAtivos, totalAlocados, totalInativos, naoAtivados, emOperacao, naoOperando: totalAtivos - emOperacao, taxaConversao, taxaOperacao },
         funil: [
+          // FIX: todas as etapas agora são comparadas contra Total Cadastros
+          // (antes: Alocados/Em Operação comparavam contra Ativados, dando %
+          // baixas que não faziam sentido como "funil de conversão completo")
           { stage: 'Total Cadastros', quantidade: totalCadastros, cor: '#6366F1', base: totalCadastros },
           { stage: 'Ativados', quantidade: totalAtivos, cor: '#22C55E', base: totalCadastros },
-          { stage: 'Alocados', quantidade: totalAlocados, cor: '#8B5CF6', base: totalAtivos },
-          { stage: 'Em Operação', quantidade: emOperacao, cor: '#3B82F6', base: totalAtivos },
+          { stage: 'Alocados', quantidade: totalAlocados, cor: '#8B5CF6', base: totalCadastros },
+          { stage: 'Em Operação', quantidade: emOperacao, cor: '#3B82F6', base: totalCadastros },
         ],
         funilTP: [
           { stage: 'Leads com Tag TP', quantidade: leadsComTP.length, cor: '#8B5CF6', base: leadsComTP.length },
@@ -236,8 +286,6 @@ export async function GET(req: NextRequest) {
         porOperador: Object.entries(ativacoesPorOperador).map(([o, q]) => ({ operador: o, quantidade: q })).sort((a, b) => b.quantidade - a.quantidade),
         porOperadorAlocacao: Object.entries(alocacoesPorOperador).map(([o, q]) => ({ operador: o, quantidade: q })).sort((a, b) => b.quantidade - a.quantidade),
         porDia: Object.keys(cadastrosPorDia).map(data => ({ data, cadastros: cadastrosPorDia[data], leadsCrm: leadsCrmPorDia[data] || 0 })),
-        mortos: leadsMortos.length,
-        ressuscitados: { total: ressuscitados.length },
         filtros: { dataInicio: dataInicioStr, dataFim: dataFimStr, regiao: regiao || 'Todas' },
       },
     });
