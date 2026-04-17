@@ -65,15 +65,15 @@ const COLORS = ['#6366F1', '#22C55E', '#F59E0B', '#EF4444', '#EC4899', '#8B5CF6'
 function RegionBars({ items, colors }: { items: Array<{ regiao: string; quantidade: number }>; colors: string[] }) {
   const maxR = items[0]?.quantidade || 1;
   return (
-    <div className="space-y-2 max-h-[450px] overflow-y-auto pr-2">
+    <div className="space-y-2 max-h-[450px] overflow-y-auto pr-3">
       {items.map((item, i) => (
-        <div key={item.regiao} className="flex items-center gap-3">
+        <div key={item.regiao} className="flex items-center gap-2" title={`${item.regiao}: ${item.quantidade}`}>
           <span className="w-3 h-3 rounded-full flex-shrink-0" style={{ backgroundColor: colors[i % colors.length] }} />
-          <span className="text-sm text-gray-700 w-44 truncate font-medium">{item.regiao}</span>
-          <div className="flex-1 h-6 bg-gray-100 rounded-full overflow-hidden">
+          <span className="text-sm text-gray-700 w-32 truncate font-medium flex-shrink-0">{item.regiao}</span>
+          <div className="flex-1 min-w-0 h-6 bg-gray-100 rounded-full overflow-hidden">
             <div className="h-full rounded-full transition-all duration-500" style={{ width: `${Math.max((item.quantidade / maxR) * 100, 3)}%`, backgroundColor: colors[i % colors.length] }} />
           </div>
-          <span className="text-sm font-bold text-gray-800 w-12 text-right">{item.quantidade}</span>
+          <span className="text-sm font-bold text-gray-800 w-14 text-right flex-shrink-0 tabular-nums">{item.quantidade.toLocaleString()}</span>
         </div>
       ))}
       {items.length === 0 && <p className="text-gray-400 text-center py-8">Sem dados no período</p>}
