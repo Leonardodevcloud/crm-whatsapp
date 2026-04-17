@@ -117,7 +117,7 @@ type LeadExport = {
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
-    const { funil, stage, dataInicio, dataFim, regiao } = body;
+    const { funil, stage, dataInicio, dataFim, regiao, modo } = body;
 
     if (!funil || !stage || !dataInicio || !dataFim) {
       return NextResponse.json(
@@ -126,16 +126,30 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const dataInicioStr = String(dataInicio).slice(0, 10);
-    const dataFimStr = String(dataFim).slice(0, 10);
+    // Modo "90d": reescreve período pra janela fixa hoje-90d..hoje e IGNORA região.
+    // Isso espelha exatamente o que o analytics-route faz no funilTP90d.
+    const is90dMode = modo === '90d';
+    let dataInicioStr: string, dataFimStr: string, regiaoEfetiva: string | undefined;
+    if (is90dMode) {
+      const hojeDt = new Date();
+      const ini = new Date(hojeDt.getTime() - 90 * 24 * 60 * 60 * 1000);
+      dataInicioStr = ini.toISOString().slice(0, 10);
+      dataFimStr = hojeDt.toISOString().slice(0, 10);
+      regiaoEfetiva = undefined; // ignora região no modo 90d
+    } else {
+      dataInicioStr = String(dataInicio).slice(0, 10);
+      dataFimStr = String(dataFim).slice(0, 10);
+      regiaoEfetiva = regiao;
+    }
+
     const dentroDoPeriodo = (d: string | null | undefined): boolean => {
       if (!d) return false;
       const dia = String(d).split('T')[0];
       return dia >= dataInicioStr && dia <= dataFimStr;
     };
     const matchRegiao = (r: string | null | undefined): boolean => {
-      if (!regiao) return true;
-      return (r || '').toLowerCase().includes(String(regiao).toLowerCase());
+      if (!regiaoEfetiva) return true;
+      return (r || '').toLowerCase().includes(String(regiaoEfetiva).toLowerCase());
     };
 
     // ========================================================================
@@ -204,7 +218,7 @@ export async function POST(req: NextRequest) {
     // ---------- FUNIL TRÁFEGO PAGO ----------
     else if (funilLower === 'tp') {
       // Carregar planilha TP
-      const itensTP = await carregarPlanilhaTP(dataInicioStr, dataFimStr, regiao);
+      const itensTP = await carregarPlanilhaTP(dataInicioStr, dataFimStr, regiaoEfetiva);
       // Indexar cadastros por telefone: exato + fingerprint
       const indiceTelCadastro = new Map<string, any>();
       const indiceFingerprint = new Map<string, any[]>();
@@ -302,7 +316,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({
       stage,
       funil,
-      periodo: { dataInicio: dataInicioStr, dataFim: dataFimStr, regiao: regiao || null },
+      periodo: { dataInicio: dataInicioStr, dataFim: dataFimStr, regiao: regiaoEfetiva || null, modo: modo || 'atual' },
       total: resultado.length,
       leads: resultado,
     });
