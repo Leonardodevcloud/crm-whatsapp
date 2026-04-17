@@ -204,7 +204,21 @@ export async function GET(req: NextRequest) {
     const linhasPlanilhaTP: LinhaTPPlanilha[] = [];
     const telsCanonicosVistos = new Set<string>(); // dedup por 1ª variação
     try {
-      const resp = await fetch(PLANILHA_TP_URL, { headers: { Accept: 'text/csv' }, signal: AbortSignal.timeout(8000) });
+      // Cache busting: força Google Sheets a servir versão fresca do CSV.
+      // Sem isso, edições recentes na planilha podem demorar 5-15min pra refletir.
+      // O cb muda a cada minuto (granularidade fina o bastante pra leituras humanas,
+      // mas não tão fina que perca cache edge completamente).
+      const cb = Math.floor(Date.now() / 60_000);
+      const planilhaUrl = `${PLANILHA_TP_URL}&cachebust=${cb}`;
+      const resp = await fetch(planilhaUrl, {
+        headers: {
+          Accept: 'text/csv',
+          'Cache-Control': 'no-cache',
+          'Pragma': 'no-cache',
+        },
+        signal: AbortSignal.timeout(8000),
+        cache: 'no-store', // não cacheia no layer do Next.js/Vercel
+      });
       if (resp.ok) {
         const csv = (await resp.text()).replace(/^\uFEFF/, '');
         const linhas = csv.split('\n');
@@ -297,12 +311,29 @@ export async function GET(req: NextRequest) {
     // 2. Índice Telefone → Lead do CRM para enriquecer as etapas seguintes
     //    (só precisamos de leads com cod_profissional)
     const indiceTelefoneLead = new Map<string, any>();
+    const amostrasTelefoneBanco: string[] = [];
+    let leadsComCodProfissional = 0;
     for (const lead of (allLeads || [])) {
       if (!lead.telefone || !lead.cod_profissional) continue;
+      leadsComCodProfissional++;
+      if (amostrasTelefoneBanco.length < 5) amostrasTelefoneBanco.push(String(lead.telefone));
       for (const v of gerarVariacoesTel(lead.telefone)) {
         if (!indiceTelefoneLead.has(v)) indiceTelefoneLead.set(v, lead);
       }
     }
+
+    console.log(
+      `[Analytics] TP índice CRM: ${leadsComCodProfissional} leads com cod_profissional | ` +
+      `${indiceTelefoneLead.size} chaves telefone indexadas | ` +
+      `amostras banco (raw): ${JSON.stringify(amostrasTelefoneBanco)}`
+    );
+
+    // Amostras de telefones da planilha para comparar formato
+    const amostrasTelefonePlanilha = linhasPlanilhaFiltradas.slice(0, 5).map(r => ({
+      telCanonico: r.telCanonico,
+      variacoes: r.variacoes,
+    }));
+    console.log(`[Analytics] TP amostras planilha (primeiras 5): ${JSON.stringify(amostrasTelefonePlanilha)}`);
 
     // 3. Para cada linha da planilha no período, tenta casar com um lead do CRM
     //    que tenha cod_profissional. Depois aplica funil.
@@ -311,17 +342,20 @@ export async function GET(req: NextRequest) {
       regiao: string | null;
       cod_profissional: string | null; // null se não bateu com nenhum lead cadastrado
     };
+    let matchesEncontrados = 0;
     const itensTP: TPItem[] = linhasPlanilhaFiltradas.map(r => {
       let cod: string | null = null;
       for (const v of (r.variacoes || [r.telCanonico])) {
         const lead = indiceTelefoneLead.get(v);
         if (lead?.cod_profissional) {
           cod = String(lead.cod_profissional);
+          matchesEncontrados++;
           break;
         }
       }
       return { telCanonico: r.telCanonico, regiao: r.regiao || null, cod_profissional: cod };
     });
+    console.log(`[Analytics] TP matches (planilha↔CRM): ${matchesEncontrados} de ${linhasPlanilhaFiltradas.length} linhas da planilha no período`);
 
     // Funil TP — valores
     const totalTP           = itensTP.length;
