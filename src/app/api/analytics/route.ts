@@ -78,17 +78,15 @@ export async function GET(req: NextRequest) {
     });
 
     // Não ativados por região
-    // FIX: antes contava `leadsPorCadastro.filter(status_api !== 'ativo')` — isso
-    // dava número diferente do KPI principal (341) porque um lead cadastrado em
-    // março e ativado em abril aparecia como "ativo" no status_api mas o KPI
-    // principal o contava como não-ativado (pois subtrai totalAtivos do período).
-    // Agora usa a MESMA lógica do KPI: cadastrado no período E não presente no
-    // conjunto de ativados do período.
+    // FIX: bater EXATO com o KPI principal (totalCadastros − totalAtivos).
+    // Antes o `if (l.regiao)` excluía leads sem região → card somava menos que o KPI.
+    // Agora leads sem região caem em "SEM REGIÃO" e o total do card === KPI.
     const naoAtivadosPorRegiao: Record<string, number> = {};
     leadsPorCadastro
       .filter((l: any) => !codsAtivosSet.has(String(l.cod)))
       .forEach((l: any) => {
-        if (l.regiao) naoAtivadosPorRegiao[l.regiao] = (naoAtivadosPorRegiao[l.regiao] || 0) + 1;
+        const reg = (l.regiao && String(l.regiao).trim()) || 'SEM REGIÃO';
+        naoAtivadosPorRegiao[reg] = (naoAtivadosPorRegiao[reg] || 0) + 1;
       });
 
     // Operador (ativados por data_ativacao)
@@ -113,13 +111,15 @@ export async function GET(req: NextRequest) {
       }
     });
 
-    // ═══ 2. CRM SUPABASE (tags TP, mortos, ressuscitados) ═══
-    // FIX: antes só trazia leads com status='ativo'. Isso excluía muitos TP
-    // legítimos (leads pausados, em fechamento, etc.). Agora trazemos SEM
-    // filtro de status para contagem de tags TP ser abrangente.
+    // ═══ 2. CRM SUPABASE (tags TP) ═══
+    // Tags TP ficam em `dados_cliente.tags` após o cron /api/enriquecer rodar.
+    // Mas leads recentes podem ainda não ter sido enriquecidos — por isso o
+    // analytics também lê a planilha TP ao vivo e mescla os dois universos
+    // por telefone. Assim, um lead cadastrado hoje de manhã já aparece como
+    // TP no dashboard se estiver na planilha.
     const { data: allLeads } = await client
       .from('dados_cliente')
-      .select('id, stage, status, regiao, tags, created_at, updated_at, ressuscitado_em, vezes_ressuscitado, cod_profissional')
+      .select('id, stage, status, regiao, tags, telefone, created_at, updated_at, ressuscitado_em, vezes_ressuscitado, cod_profissional')
       .limit(50000);
 
     const leadsCrmNoPeriodo = (allLeads || []).filter(lead => {
@@ -130,13 +130,11 @@ export async function GET(req: NextRequest) {
       return true;
     });
 
-    // FIX: parser de tags mais robusto — aceita array, JSON array string,
-    // formato postgres {a,b,c}, string simples, e ignora valores vazios/nulos
+    // Parser de tags robusto — aceita array JS, JSON string, formato postgres {}, objeto JSON
     const parseTags = (tags: any): string[] => {
       if (!tags) return [];
       if (Array.isArray(tags)) return tags.map(t => String(t).trim()).filter(Boolean);
       if (typeof tags === 'object') {
-        // Pode vir como objeto JSON do postgres
         try {
           const vals = Object.values(tags).flat();
           return vals.map((t: any) => String(t).trim()).filter(Boolean);
@@ -145,49 +143,140 @@ export async function GET(req: NextRequest) {
       if (typeof tags === 'string') {
         const str = tags.trim();
         if (!str) return [];
-        // Formato postgres: {tag1,tag2,"tag com espaço"}
         if (str.startsWith('{') && str.endsWith('}')) {
-          return str.slice(1, -1)
-            .split(',')
-            .map(t => t.trim().replace(/^"|"$/g, ''))
-            .filter(Boolean);
+          return str.slice(1, -1).split(',').map(t => t.trim().replace(/^"|"$/g, '')).filter(Boolean);
         }
-        // Formato JSON array: ["tag1","tag2"]
         if (str.startsWith('[') && str.endsWith(']')) {
           try {
             const arr = JSON.parse(str);
             if (Array.isArray(arr)) return arr.map(t => String(t).trim()).filter(Boolean);
           } catch { /* fallback abaixo */ }
         }
-        // String simples
         return [str];
       }
       return [];
     };
 
-    // FIX: TP agora busca no universo inteiro (não só no período), porque tag
-    // TP representa origem do lead — não expira com o tempo. Respeita região
-    // se informada.
-    const todosLeadsCrm = (allLeads || []).filter(lead => {
-      if (regiao && lead.regiao !== regiao) return false;
-      return true;
-    });
+    // ─── Planilha TP ao vivo (fallback para leads ainda não enriquecidos) ───
+    // Mesma planilha usada pelo /api/enriquecer. Cruzamos por telefone.
+    const PLANILHA_TP_URL = 'https://docs.google.com/spreadsheets/d/1MOttPq20kzgnTY5Rv_9ocJNsp3ZFad0_xt_M96utES8/export?format=csv&gid=0';
 
-    // TP: Leads com tag TP (universo total) → com cadastro → ATIVADOS → em operação
-    const leadsComTP = todosLeadsCrm.filter(l => parseTags(l.tags).some(t => /^TP/i.test(t)));
+    const normalizarTel = (tel: string): string => (tel || '').replace(/\D/g, '');
+    const gerarVariacoesTel = (tel: string): string[] => {
+      const norm = normalizarTel(tel);
+      if (!norm) return [];
+      const variacoes = new Set<string>([norm]);
+      // Sem DDI (55)
+      if (norm.startsWith('55') && norm.length >= 12) variacoes.add(norm.slice(2));
+      // Com DDI
+      if (!norm.startsWith('55')) variacoes.add('55' + norm);
+      // Com/sem 9 adicional no celular (formato brasileiro)
+      // 558199999999 ↔ 55819999999  | 8199999999 ↔ 819999999
+      const comDDI = norm.startsWith('55') ? norm : '55' + norm;
+      if (comDDI.length === 13) { // ex: 5581 9 9999 9999 → remover 9 após DDD
+        variacoes.add(comDDI.slice(0, 4) + comDDI.slice(5));
+        variacoes.add((comDDI.slice(0, 4) + comDDI.slice(5)).slice(2)); // sem DDI
+      } else if (comDDI.length === 12) { // ex: 558199999999 → adicionar 9
+        variacoes.add(comDDI.slice(0, 4) + '9' + comDDI.slice(4));
+        variacoes.add((comDDI.slice(0, 4) + '9' + comDDI.slice(4)).slice(2));
+      }
+      return Array.from(variacoes);
+    };
+
+    // Parse CSV básico (lida com aspas e BOM)
+    const parseCsvLinha = (l: string): string[] => {
+      const out: string[] = []; let cur = ''; let q = false;
+      for (let i = 0; i < l.length; i++) {
+        const c = l[i];
+        if (c === '"') q = !q;
+        else if (c === ',' && !q) { out.push(cur.trim()); cur = ''; }
+        else if (c !== '\r') cur += c;
+      }
+      out.push(cur.trim());
+      return out;
+    };
+
+    // Map telefone(variação) → { tag, data? }
+    const mapaTPPlanilha = new Map<string, { tag: string; dataISO: string | null }>();
+    try {
+      const resp = await fetch(PLANILHA_TP_URL, { headers: { Accept: 'text/csv' }, signal: AbortSignal.timeout(8000) });
+      if (resp.ok) {
+        const csv = (await resp.text()).replace(/^\uFEFF/, '');
+        const linhas = csv.split('\n');
+        if (linhas.length >= 2) {
+          const headers = parseCsvLinha(linhas[0]).map(h =>
+            h.replace(/^\uFEFF/, '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
+          );
+          // Detectar nome da coluna de data (tentativas comuns)
+          const colData = headers.findIndex(h =>
+            h === 'data' || h === 'data cadastro' || h === 'data_cadastro' || h === 'created' ||
+            h === 'created at' || h === 'data lead' || h === 'dt' || h === 'cadastro'
+          );
+          const colPhone = headers.findIndex(h => h === 'phone' || h === 'telefone');
+          const colTp    = headers.findIndex(h => h === 'tp');
+
+          console.log(`[Analytics] Planilha TP: headers=${JSON.stringify(headers)} | colData=${colData} colPhone=${colPhone} colTp=${colTp}`);
+
+          for (let i = 1; i < linhas.length; i++) {
+            if (!linhas[i].trim()) continue;
+            const vals = parseCsvLinha(linhas[i]);
+            const tel = colPhone >= 0 ? vals[colPhone] : '';
+            const tp  = colTp    >= 0 ? vals[colTp]    : '';
+            const dataRaw = colData >= 0 ? vals[colData] : '';
+            if (!tel || !tp || !/^TP/i.test(tp)) continue;
+
+            // Converter data BR (DD/MM/YYYY) ou ISO (YYYY-MM-DD) para ISO
+            let dataISO: string | null = null;
+            if (dataRaw) {
+              const m = dataRaw.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})/);
+              if (m) {
+                const ano = m[3].length === 2 ? '20' + m[3] : m[3];
+                dataISO = `${ano}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}`;
+              } else if (/^\d{4}-\d{2}-\d{2}/.test(dataRaw)) {
+                dataISO = dataRaw.slice(0, 10);
+              }
+            }
+
+            for (const v of gerarVariacoesTel(tel)) {
+              // Preserva a 1ª ocorrência (planilha pode ter duplicadas)
+              if (!mapaTPPlanilha.has(v)) mapaTPPlanilha.set(v, { tag: tp.trim(), dataISO });
+            }
+          }
+          console.log(`[Analytics] Planilha TP: ${mapaTPPlanilha.size} variações de telefone mapeadas`);
+        }
+      } else {
+        console.log(`[Analytics] Planilha TP HTTP ${resp.status}`);
+      }
+    } catch (e: any) {
+      console.log(`[Analytics] Planilha TP falhou (usando só banco): ${e.message}`);
+    }
+
+    // ─── TP no período: universo = (banco ∪ planilha) ────────────────────────
+    // Para cada lead cadastrado no período, checa:
+    //   a) tem tag TP em dados_cliente.tags (banco)? → conta
+    //   b) OU telefone bate com planilha TP? → conta (mesmo sem tag no banco)
+    // Isso pega os leads recentes que ainda não foram enriquecidos.
+    const temTPBanco = (lead: any): boolean =>
+      parseTags(lead.tags).some(t => /^TP/i.test(t));
+
+    const temTPPlanilha = (lead: any): boolean => {
+      if (!lead.telefone) return false;
+      return gerarVariacoesTel(lead.telefone).some(v => mapaTPPlanilha.has(v));
+    };
+
+    // Filtro de período usa o created_at do lead (consistente com demais KPIs)
+    const leadsComTP = leadsCrmNoPeriodo.filter(l => temTPBanco(l) || temTPPlanilha(l));
     const leadsTPComCadastro = leadsComTP.filter(l => l.cod_profissional);
-    // TP Ativados = TP com cadastro cujo código está ativo no crm_leads_capturados
-    // Aqui usamos o set de TODOS os ativos (não só do período) pra não subestimar
-    const codsAtivosGlobalSet = new Set(
-      todosLeads.filter((l: any) => l.status_api === 'ativo').map((l: any) => String(l.cod))
-    );
-    const leadsTPAtivados = leadsTPComCadastro.filter(l => codsAtivosGlobalSet.has(String(l.cod_profissional)));
+    const leadsTPAtivados = leadsTPComCadastro.filter(l => codsAtivosSet.has(String(l.cod_profissional)));
+
+    // Log comparativo para debug
+    const tpSoBanco     = leadsCrmNoPeriodo.filter(l => temTPBanco(l) && !temTPPlanilha(l)).length;
+    const tpSoPlanilha  = leadsCrmNoPeriodo.filter(l => !temTPBanco(l) && temTPPlanilha(l)).length;
+    const tpAmbos       = leadsCrmNoPeriodo.filter(l => temTPBanco(l) &&  temTPPlanilha(l)).length;
+    console.log(`[Analytics] TP no período: total=${leadsComTP.length} (só banco=${tpSoBanco}, só planilha=${tpSoPlanilha}, ambos=${tpAmbos})`);
 
     const tpPorRegiao: Record<string, number> = {};
-    leadsComTP.forEach(l => { const reg = (l.regiao || 'Sem região').toUpperCase(); tpPorRegiao[reg] = (tpPorRegiao[reg] || 0) + 1; });
-
-    const leadsPorTag: Record<string, number> = {};
-    leadsCrmNoPeriodo.forEach(lead => { parseTags(lead.tags).forEach(tag => { if (tag) leadsPorTag[tag.trim()] = (leadsPorTag[tag.trim()] || 0) + 1; }); });
+    leadsComTP.forEach(l => { const reg = (l.regiao || 'SEM REGIÃO').toUpperCase(); tpPorRegiao[reg] = (tpPorRegiao[reg] || 0) + 1; });
 
     // Mortos/ressuscitados removidos do analytics conforme solicitação
     // (conceitos seguem existindo no kanban, cron de enriquecimento e types)
