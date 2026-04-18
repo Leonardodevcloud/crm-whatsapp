@@ -35,7 +35,7 @@ interface AnalyticsData {
   tpPorRegiao: Array<{ regiao: string; quantidade: number }>;
   porOperador: Array<{ operador: string; quantidade: number }>;
   porOperadorAlocacao: Array<{ operador: string; quantidade: number }>;
-  porDia: Array<{ data: string; cadastros: number; leadsCrm: number }>;
+  porDia: Array<{ data: string; cadastros: number; ativados: number; alocacoes: number }>;
   filtros: { dataInicio: string; dataFim: string; regiao: string };
 }
 
@@ -428,65 +428,241 @@ function RegionBars({ items, colors }: { items: Array<{ regiao: string; quantida
 }
 
 // ═══ Chart with state-based tooltip ═══
-function ChartDia({ porDia }: { porDia: Array<{ data: string; cadastros: number; leadsCrm: number }> }) {
-  const [tip, setTip] = useState<{ x: number; y: number; d: typeof porDia[0] } | null>(null);
-  const chartRef = useRef<HTMLDivElement>(null);
-  const CHART_H = 300;
-  const maxDia = Math.max(...porDia.map(d => d.cadastros + d.leadsCrm), 1);
+// ═══ ChartDia — AreaChart suave em SVG nativo com 3 séries ═══
+type DiaPoint = { data: string; cadastros: number; ativados: number; alocacoes: number };
+function ChartDia({ porDia }: { porDia: DiaPoint[] }) {
+  const [tipIdx, setTipIdx] = useState<number | null>(null);
+  const svgRef = useRef<SVGSVGElement>(null);
+  const [svgW, setSvgW] = useState(1000);
+
+  // Redimensionar SVG dinamicamente
+  useEffect(() => {
+    const el = svgRef.current?.parentElement;
+    if (!el) return;
+    const ro = new ResizeObserver(entries => {
+      for (const e of entries) setSvgW(Math.max(400, e.contentRect.width));
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  if (!porDia || porDia.length === 0) {
+    return (
+      <div className="card p-6">
+        <h3 className="text-lg font-bold text-gray-800 flex items-center gap-2 mb-2"><Calendar className="w-5 h-5 text-teal-600" /> Evolução diária</h3>
+        <p className="text-sm text-gray-400 text-center py-8">Sem dados no período</p>
+      </div>
+    );
+  }
+
+  const PADDING = { top: 20, right: 30, bottom: 40, left: 48 };
+  const H = 320;
+  const plotW = svgW - PADDING.left - PADDING.right;
+  const plotH = H - PADDING.top - PADDING.bottom;
+  const N = porDia.length;
+
+  // Domínio Y: máximo das 3 séries + folga de 10%
+  const maxY = Math.max(
+    1,
+    ...porDia.map(d => Math.max(d.cadastros, d.ativados, d.alocacoes))
+  );
+  const yMax = Math.ceil(maxY * 1.1);
+
+  // Escalas
+  const xAt = (i: number) => PADDING.left + (N === 1 ? plotW / 2 : (i / (N - 1)) * plotW);
+  const yAt = (v: number) => PADDING.top + plotH - (v / yMax) * plotH;
+
+  // Gridlines horizontais (4 linhas, incluindo 0 e yMax)
+  const gridLines = Array.from({ length: 5 }, (_, i) => {
+    const v = Math.round((yMax / 4) * i);
+    return { v, y: yAt(v) };
+  });
+
+  // Path helper: spline Catmull-Rom convertida em Bézier cúbica
+  const smoothPath = (points: Array<{ x: number; y: number }>, closeToBase = false) => {
+    if (points.length === 0) return '';
+    if (points.length === 1) {
+      const p = points[0];
+      return `M ${p.x} ${p.y}`;
+    }
+    let d = `M ${points[0].x} ${points[0].y}`;
+    for (let i = 0; i < points.length - 1; i++) {
+      const p0 = points[i - 1] || points[i];
+      const p1 = points[i];
+      const p2 = points[i + 1];
+      const p3 = points[i + 2] || p2;
+      const tension = 0.2;
+      const cp1x = p1.x + (p2.x - p0.x) * tension;
+      const cp1y = p1.y + (p2.y - p0.y) * tension;
+      const cp2x = p2.x - (p3.x - p1.x) * tension;
+      const cp2y = p2.y - (p3.y - p1.y) * tension;
+      d += ` C ${cp1x} ${cp1y}, ${cp2x} ${cp2y}, ${p2.x} ${p2.y}`;
+    }
+    if (closeToBase) {
+      const last = points[points.length - 1];
+      const first = points[0];
+      d += ` L ${last.x} ${yAt(0)} L ${first.x} ${yAt(0)} Z`;
+    }
+    return d;
+  };
+
+  // Converter cada série em pontos {x, y}
+  const seriePts = (campo: 'cadastros' | 'ativados' | 'alocacoes') =>
+    porDia.map((d, i) => ({ x: xAt(i), y: yAt(d[campo]) }));
+
+  const series = [
+    { nome: 'Cadastros', campo: 'cadastros' as const, cor: '#14B8A6', corClara: 'rgba(20, 184, 166, 0.2)' },
+    { nome: 'Ativados',  campo: 'ativados'  as const, cor: '#22C55E', corClara: 'rgba(34, 197, 94, 0.2)' },
+    { nome: 'Alocações', campo: 'alocacoes' as const, cor: '#8B5CF6', corClara: 'rgba(139, 92, 246, 0.22)' },
+  ];
+
+  // Decidir quais rótulos de X mostrar (não mais que ~12 pra não embolar)
+  const passo = Math.max(1, Math.ceil(N / 12));
+  const formatarDiaMes = (s: string) => { const p = s.split('-'); return `${p[2]}/${p[1]}`; };
+
+  // Tooltip posicionado sobre o ponto
+  const pontoAtivo = tipIdx !== null ? porDia[tipIdx] : null;
+  const pontoX = tipIdx !== null ? xAt(tipIdx) : 0;
 
   return (
-    <div className="card p-6" ref={chartRef}>
-      <h3 className="text-lg font-bold text-gray-800 flex items-center gap-2 mb-1"><Calendar className="w-5 h-5 text-teal-600" /> Cadastros por Dia</h3>
-      <div className="flex items-center gap-5 mb-6 text-xs text-gray-500">
-        <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded-sm bg-teal-500 inline-block" /> Cadastros (Mapp)</span>
-        <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded-sm bg-purple-500 inline-block" /> Leads CRM</span>
+    <div className="card p-6">
+      <h3 className="text-lg font-bold text-gray-800 flex items-center gap-2 mb-1">
+        <Calendar className="w-5 h-5 text-teal-600" /> Evolução diária
+      </h3>
+      <div className="flex items-center gap-5 mb-4 text-xs text-gray-600 flex-wrap">
+        {series.map(s => (
+          <span key={s.nome} className="flex items-center gap-1.5">
+            <span className="w-3 h-3 rounded-full inline-block" style={{ backgroundColor: s.cor }} />
+            {s.nome}
+          </span>
+        ))}
       </div>
 
-      {/* Tooltip portal */}
-      {tip && (
-        <div style={{ position: 'fixed', left: tip.x, top: tip.y, transform: 'translate(-50%, -100%)', zIndex: 9999, pointerEvents: 'none' }}>
-          <div style={{ background: '#111827', color: '#fff', fontSize: '12px', borderRadius: '8px', padding: '8px 12px', boxShadow: '0 4px 12px rgba(0,0,0,0.3)', whiteSpace: 'nowrap' }}>
-            <div style={{ fontWeight: 700 }}>{tip.d.data.split('-')[2]}/{tip.d.data.split('-')[1]}</div>
-            <div>Cadastros: <span style={{ color: '#2DD4BF', fontWeight: 700 }}>{tip.d.cadastros}</span></div>
-            <div>CRM: <span style={{ color: '#C084FC', fontWeight: 700 }}>{tip.d.leadsCrm}</span></div>
-            <div style={{ borderTop: '1px solid #374151', marginTop: 4, paddingTop: 4, fontWeight: 700 }}>Total: {tip.d.cadastros + tip.d.leadsCrm}</div>
-          </div>
-          <div style={{ display: 'flex', justifyContent: 'center' }}><span style={{ width: 0, height: 0, borderLeft: '6px solid transparent', borderRight: '6px solid transparent', borderTop: '6px solid #111827' }} /></div>
-        </div>
-      )}
+      <div className="relative w-full">
+        <svg ref={svgRef} width={svgW} height={H} style={{ display: 'block', overflow: 'visible' }}>
+          <defs>
+            {series.map(s => (
+              <linearGradient key={s.campo} id={`grad-${s.campo}`} x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stopColor={s.cor} stopOpacity={0.35} />
+                <stop offset="100%" stopColor={s.cor} stopOpacity={0.02} />
+              </linearGradient>
+            ))}
+          </defs>
 
-      <div className="overflow-x-auto">
-        <div className="flex items-end gap-1 pb-8" style={{ height: `${CHART_H + 60}px`, minWidth: `${porDia.length * 36}px` }}>
-          {porDia.map((item, idx) => {
-            const total = item.cadastros + item.leadsCrm;
-            const barH = maxDia > 0 ? Math.round((total / maxDia) * CHART_H) : 0;
-            const cadastroH = total > 0 ? Math.round((item.cadastros / total) * barH) : 0;
-            const crmH = barH - cadastroH;
-            const dia = item.data.split('-')[2];
-            const mes = item.data.split('-')[1];
+          {/* Gridlines horizontais */}
+          {gridLines.map(g => (
+            <g key={g.v}>
+              <line
+                x1={PADDING.left} x2={svgW - PADDING.right}
+                y1={g.y} y2={g.y}
+                stroke="#E5E7EB" strokeDasharray="3 3"
+              />
+              <text
+                x={PADDING.left - 8} y={g.y}
+                textAnchor="end" dominantBaseline="middle"
+                fontSize="11" fill="#9CA3AF"
+              >{g.v}</text>
+            </g>
+          ))}
 
+          {/* Áreas + linhas de cada série */}
+          {series.map(s => {
+            const pts = seriePts(s.campo);
             return (
-              <div key={item.data} className="flex flex-col items-center flex-1 min-w-[30px] cursor-pointer"
-                onMouseEnter={(e) => {
-                  const rect = e.currentTarget.getBoundingClientRect();
-                  setTip({ x: rect.left + rect.width / 2, y: rect.top - 8, d: item });
-                }}
-                onMouseMove={(e) => {
-                  const rect = e.currentTarget.getBoundingClientRect();
-                  setTip({ x: rect.left + rect.width / 2, y: rect.top - 8, d: item });
-                }}
-                onMouseLeave={() => setTip(null)}>
-                {total > 0 && <span className="text-[11px] font-semibold text-gray-600 mb-1">{total}</span>}
-                <div className="w-full flex flex-col justify-end rounded-t-md overflow-hidden" style={{ height: `${Math.max(barH, 2)}px` }}>
-                  {cadastroH > 0 && <div className="w-full bg-teal-500 hover:bg-teal-400 transition-colors" style={{ height: `${cadastroH}px` }} />}
-                  {crmH > 0 && <div className="w-full bg-purple-500 hover:bg-purple-400 transition-colors" style={{ height: `${crmH}px` }} />}
-                  {total === 0 && <div className="w-full bg-gray-200" style={{ height: '2px' }} />}
-                </div>
-                <span className="text-[10px] text-gray-400 mt-2">{dia}/{mes}</span>
-              </div>
+              <g key={s.campo}>
+                <path d={smoothPath(pts, true)} fill={`url(#grad-${s.campo})`} />
+                <path d={smoothPath(pts, false)} fill="none" stroke={s.cor} strokeWidth={2.5} />
+              </g>
             );
           })}
-        </div>
+
+          {/* Rótulos X */}
+          {porDia.map((d, i) => {
+            if (i % passo !== 0 && i !== N - 1) return null;
+            return (
+              <text
+                key={d.data}
+                x={xAt(i)} y={H - PADDING.bottom + 18}
+                textAnchor="middle" fontSize="11" fill="#6B7280"
+              >{formatarDiaMes(d.data)}</text>
+            );
+          })}
+
+          {/* Pontos + hitbox invisíveis pra tooltip */}
+          {porDia.map((d, i) => {
+            const x = xAt(i);
+            const ativo = tipIdx === i;
+            return (
+              <g key={d.data}>
+                {series.map(s => (
+                  <circle
+                    key={s.campo}
+                    cx={x} cy={yAt(d[s.campo])}
+                    r={ativo ? 5 : 3}
+                    fill="#fff" stroke={s.cor} strokeWidth={2}
+                    style={{ transition: 'r 0.15s' }}
+                  />
+                ))}
+                {/* Hitbox largo invisível pra facilitar hover */}
+                <rect
+                  x={x - (plotW / N) / 2} y={PADDING.top}
+                  width={plotW / N} height={plotH}
+                  fill="transparent"
+                  onMouseEnter={() => setTipIdx(i)}
+                  onMouseLeave={() => setTipIdx(null)}
+                  style={{ cursor: 'pointer' }}
+                />
+              </g>
+            );
+          })}
+
+          {/* Linha vertical no ponto ativo */}
+          {tipIdx !== null && (
+            <line
+              x1={pontoX} x2={pontoX}
+              y1={PADDING.top} y2={PADDING.top + plotH}
+              stroke="#9CA3AF" strokeDasharray="3 3"
+            />
+          )}
+        </svg>
+
+        {/* Tooltip */}
+        {pontoAtivo && (
+          <div
+            style={{
+              position: 'absolute',
+              left: pontoX,
+              top: 0,
+              transform: 'translate(-50%, -8px)',
+              pointerEvents: 'none',
+            }}
+          >
+            <div
+              style={{
+                background: '#111827',
+                color: '#fff',
+                fontSize: 12,
+                borderRadius: 8,
+                padding: '8px 12px',
+                boxShadow: '0 4px 12px rgba(0,0,0,0.3)',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              <div style={{ fontWeight: 700, marginBottom: 4 }}>
+                {formatarDiaMes(pontoAtivo.data)}
+              </div>
+              {series.map(s => (
+                <div key={s.campo} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <span style={{ width: 8, height: 8, borderRadius: 999, background: s.cor, display: 'inline-block' }} />
+                  {s.nome}:{' '}
+                  <span style={{ fontWeight: 700, marginLeft: 4 }}>
+                    {pontoAtivo[s.campo]}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
