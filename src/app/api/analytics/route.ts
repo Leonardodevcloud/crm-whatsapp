@@ -130,6 +130,15 @@ export async function GET(req: NextRequest) {
       if (l.regiao) ativadosPorRegiao[l.regiao] = (ativadosPorRegiao[l.regiao] || 0) + 1;
     });
 
+    // Cadastros por região (filtrado por data_cadastro) — pro toggle do card
+    // "Ativados por Região" ↔ "Cadastros por Região". Usa MESMA lógica de fallback
+    // pra SEM REGIÃO do card de não ativados, pra somatório bater com o KPI total.
+    const cadastrosPorRegiao: Record<string, number> = {};
+    leadsPorCadastro.forEach((l: any) => {
+      const reg = (l.regiao && String(l.regiao).trim()) || 'SEM REGIÃO';
+      cadastrosPorRegiao[reg] = (cadastrosPorRegiao[reg] || 0) + 1;
+    });
+
     // Não ativados por região
     // Regra única (igual ao KPI): leads cadastrados no período cujo cod NÃO está
     // em codsAtivosSet (ativados no período). Leads sem região vão pra "SEM REGIÃO"
@@ -922,6 +931,7 @@ export async function GET(req: NextRequest) {
         },
         conversaoOperacao: { leadsAtivados: totalAtivos, emOperacao, naoOperando: totalAtivos - emOperacao, taxaReal: taxaOperacao },
         porRegiao: Object.entries(ativadosPorRegiao).map(([r, q]) => ({ regiao: r, quantidade: q })).sort((a, b) => b.quantidade - a.quantidade),
+        cadastrosPorRegiao: Object.entries(cadastrosPorRegiao).map(([r, q]) => ({ regiao: r, quantidade: q })).sort((a, b) => b.quantidade - a.quantidade),
         naoAtivadosPorRegiao: Object.entries(naoAtivadosPorRegiao).map(([r, q]) => ({ regiao: r, quantidade: q })).sort((a, b) => b.quantidade - a.quantidade),
         tpPorRegiao: Object.entries(tpPorRegiao).map(([r, q]) => ({ regiao: r, quantidade: q })).sort((a, b) => b.quantidade - a.quantidade),
         porOperador: Object.entries(ativacoesPorOperador).map(([o, q]) => ({ operador: o, quantidade: q })).sort((a, b) => b.quantidade - a.quantidade),
