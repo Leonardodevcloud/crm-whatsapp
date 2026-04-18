@@ -144,9 +144,31 @@ export async function GET(req: NextRequest) {
     });
 
     // Operador (ativados por data_ativacao)
-    const ativacoesPorOperador: Record<string, number> = {};
+    // Estrutura enriquecida: pra cada operador guardamos:
+    //   - leads (lista de cods pra cruzar com operação)
+    //   - deltasDias (cadastro → ativação, pra calcular tempo médio)
+    const ativacoesPorOperadorDados: Record<string, { leads: string[]; deltasDias: number[] }> = {};
     leadsPorAtivacao.filter((l: any) => l.quem_ativou).forEach((l: any) => {
-      ativacoesPorOperador[l.quem_ativou] = (ativacoesPorOperador[l.quem_ativou] || 0) + 1;
+      const op = l.quem_ativou;
+      if (!ativacoesPorOperadorDados[op]) {
+        ativacoesPorOperadorDados[op] = { leads: [], deltasDias: [] };
+      }
+      ativacoesPorOperadorDados[op].leads.push(String(l.cod));
+      if (l.data_cadastro && l.data_ativacao) {
+        const tCad = new Date(l.data_cadastro).getTime();
+        const tAtv = new Date(l.data_ativacao).getTime();
+        if (!isNaN(tCad) && !isNaN(tAtv)) {
+          const dias = Math.round((tAtv - tCad) / msDia);
+          if (dias >= 0 && dias <= 365) {
+            ativacoesPorOperadorDados[op].deltasDias.push(dias);
+          }
+        }
+      }
+    });
+    // Versão simples (compat com o que já existe no frontend)
+    const ativacoesPorOperador: Record<string, number> = {};
+    Object.entries(ativacoesPorOperadorDados).forEach(([op, d]) => {
+      ativacoesPorOperador[op] = d.leads.length;
     });
 
     // Cadastros / Ativados por dia — ambos usam as MESMAS chaves de dia
@@ -622,6 +644,7 @@ export async function GET(req: NextRequest) {
     let emOperacao90d = 0; // funil de conversão — versão 90 dias
     let tpEmOperacao = 0;
     let tpEmOperacao90d = 0; // versão "últimos 3 meses" (janela fixa 90d)
+    let retencaoRodaramNoAtual = 0; // ativados no período ANT que rodaram no ATUAL
     let codsEmOperacaoSet = new Set<string>();
     try {
       const codigosAtivos = leadsPorAtivacao.map((l: any) => String(l.cod)).filter(Boolean);
@@ -700,7 +723,55 @@ export async function GET(req: NextRequest) {
           emOperacao90d = Array.from(setOpConv90).filter((c: string) => setAtivConv90.has(c)).length;
         }
       }
+
+      // ═══ RETENÇÃO — leads ativados no período anterior que rodaram no atual ═══
+      // Pergunta: dos X leads ativados no mês anterior, quantos fizeram entrega
+      // no período atual? Isso mede retenção/churn pós-ativação.
+      // codigosAtivosAnt já foi calculado acima (leadsPorAtivacaoAnt).
+      if (codigosAtivosAnt.length > 0) {
+        const biRet = await fetch(`${BI_API_URL}/api/crm/verificar-operacao`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...(CRM_SERVICE_KEY ? { 'x-service-key': CRM_SERVICE_KEY } : {}) },
+          // Chave: ativados do PERÍODO ANTERIOR, mas verifica entregas do PERÍODO ATUAL
+          body: JSON.stringify({ codigos: codigosAtivosAnt, data_inicio: dataInicioStr, data_fim: dataFimStr }),
+        }).then(r => r.json()).catch(() => null);
+        if (biRet?.resultado) {
+          const setRet = new Set<string>(biRet.resultado.filter((r: any) => r.em_operacao).map((r: any) => String(r.cod_profissional)));
+          retencaoRodaramNoAtual = setRet.size;
+        }
+      }
     } catch (err: any) { console.error('[Analytics] Erro BI:', err.message); }
+
+    // ═══ QUALIDADE POR OPERADOR ═══
+    // Pra cada operador que ativou leads no período, calcula:
+    //  - ativados (volume)
+    //  - emOperacao (quantos dos leads dele estão rodando no período)
+    //  - taxaOp (% ativados que viraram operação)
+    //  - tempoMedioDias (média de dias entre cadastro e ativação)
+    // Fonte de "em operação": codsEmOperacaoSet populado no bloco BI acima.
+    const qualidadePorOperador: Array<{
+      operador: string;
+      ativados: number;
+      emOperacao: number;
+      taxaOp: number;
+      tempoMedioDias: number | null;
+    }> = [];
+    Object.entries(ativacoesPorOperadorDados).forEach(([op, d]) => {
+      const ativados = d.leads.length;
+      const emOp = d.leads.filter(c => codsEmOperacaoSet.has(c)).length;
+      const taxaOp = ativados > 0 ? Math.round((emOp / ativados) * 100) : 0;
+      const tempoMedio = d.deltasDias.length > 0
+        ? Math.round((d.deltasDias.reduce((s, n) => s + n, 0) / d.deltasDias.length) * 10) / 10
+        : null;
+      qualidadePorOperador.push({
+        operador: op,
+        ativados,
+        emOperacao: emOp,
+        taxaOp,
+        tempoMedioDias: tempoMedio,
+      });
+    });
+    qualidadePorOperador.sort((a, b) => b.ativados - a.ativados);
 
     // ═══ 4. ALOCAÇÕES (mesmo período) ═══
     // FIX: antes tinha `importado=false`, o que excluía todas as alocações
@@ -795,6 +866,23 @@ export async function GET(req: NextRequest) {
           cadastroAtivacao: velocidadeCadAtiv, // { media, mediana, p75, amostra }
           tpLeadAtivacao:   velocidadeTpAtiv,
         },
+        // ═══ Qualidade por Operador ═══
+        // Cada operador com: ativados, emOperacao, taxaOp (% operando), tempoMedioDias
+        qualidadePorOperador,
+
+        // ═══ Retenção ═══
+        // Dos leads ativados no período ANTERIOR, quantos rodaram no período ATUAL?
+        retencao: {
+          baseAnt: leadsPorAtivacaoAnt.length, // leads ativados no período anterior
+          rodaramNoAtual: retencaoRodaramNoAtual, // quantos fizeram entrega no período atual
+          taxaPct: leadsPorAtivacaoAnt.length > 0
+            ? Math.round((retencaoRodaramNoAtual / leadsPorAtivacaoAnt.length) * 100)
+            : 0,
+          churnAbsoluto: Math.max(0, leadsPorAtivacaoAnt.length - retencaoRodaramNoAtual),
+          periodoAnterior: { dataInicio: dataAntInicioStr, dataFim: dataAntFimStr },
+          periodoAtual: { dataInicio: dataInicioStr, dataFim: dataFimStr },
+        },
+
         funil: [
           // FIX: todas as etapas agora são comparadas contra Total Cadastros
           // (antes: Alocados/Em Operação comparavam contra Ativados, dando %
