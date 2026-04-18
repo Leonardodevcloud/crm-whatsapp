@@ -168,37 +168,70 @@ export async function POST(req: NextRequest) {
 
     // ========================================================================
     // Pré-carregar planilha TP INTEIRA (sem filtro de data) para construir
-    // um índice Telefone → [tags] que vai enriquecer TODOS os leads exportados.
-    // Isso faz com que um lead ativado do funil de conversão mostre a tag TP
-    // quando tiver aparecido na planilha, mesmo que seja drill-down do conversão.
+    // um índice Telefone → { tags, dataLead } que vai enriquecer TODOS os
+    // leads exportados. Também carregamos alocações da Supabase para preencher
+    // "Quem Alocou" em todos os drilldowns.
     // ========================================================================
     const todasLinhasTP = await carregarPlanilhaTP('1900-01-01', '2999-12-31', undefined);
-    const indiceTagsPorTelefone = new Map<string, Set<string>>();
+    type IndiceInfoTP = { tags: Set<string>; dataLead: string | null };
+    const indiceInfoTPPorTelefone = new Map<string, IndiceInfoTP>();
     for (const linha of todasLinhasTP) {
       for (const v of (linha.variacoes || [linha.telCanonico])) {
-        const tags = indiceTagsPorTelefone.get(v) || new Set<string>();
-        if (linha.tag) tags.add(linha.tag);
-        indiceTagsPorTelefone.set(v, tags);
+        const atual = indiceInfoTPPorTelefone.get(v) || { tags: new Set<string>(), dataLead: null };
+        if (linha.tag) atual.tags.add(linha.tag);
+        // Guarda a PRIMEIRA data de lead TP encontrada (mais antiga ganha)
+        if (linha.dataISO && (!atual.dataLead || linha.dataISO < atual.dataLead)) {
+          atual.dataLead = linha.dataISO;
+        }
+        indiceInfoTPPorTelefone.set(v, atual);
       }
     }
 
-    // Helper: dado um telefone, retorna as tags TP que esse lead tem na planilha
-    const obterTagsDoLead = (tel: string | null | undefined): string[] => {
-      if (!tel) return [];
-      for (const v of gerarVariacoesTel(tel)) {
-        const s = indiceTagsPorTelefone.get(v);
-        if (s && s.size > 0) return Array.from(s);
+    // Índice de alocações por cod_profissional — pra preencher "Quem Alocou"
+    // em qualquer drilldown. Carrega todas as alocações ativas.
+    const indiceAlocacaoPorCod = new Map<string, string>();
+    try {
+      const client = supabaseAdmin || supabase;
+      const { data: alocs } = await client
+        .from('crm_alocacoes')
+        .select('cod_profissional, quem_alocou')
+        .eq('ativo', true);
+      for (const a of alocs || []) {
+        if (a.cod_profissional && a.quem_alocou) {
+          indiceAlocacaoPorCod.set(String(a.cod_profissional), a.quem_alocou);
+        }
       }
-      return [];
+    } catch (e) {
+      console.warn('[drilldown] Falha ao carregar alocações:', e);
+    }
+
+    // Helper: dado um telefone, retorna { tags, dataLead } TP desse lead
+    const obterInfoTP = (tel: string | null | undefined): IndiceInfoTP => {
+      if (!tel) return { tags: new Set(), dataLead: null };
+      for (const v of gerarVariacoesTel(tel)) {
+        const s = indiceInfoTPPorTelefone.get(v);
+        if (s && (s.tags.size > 0 || s.dataLead)) return s;
+      }
+      return { tags: new Set(), dataLead: null };
+    };
+    // Alias retro-compatível: algumas linhas usam obterTagsDoLead
+    const obterTagsDoLead = (tel: string | null | undefined): string[] => {
+      return Array.from(obterInfoTP(tel).tags);
     };
 
-    // Helper que envolve toLeadExport adicionando as tags TP e marcando origem
+    // Helper que envolve toLeadExport adicionando tags + dataLead + quem_alocou
     const enriquecer = (l: any): LeadExport => {
       const base = toLeadExport(l);
-      const tags = obterTagsDoLead(base.telefone);
-      if (tags.length > 0) {
-        base.tags = tags;
+      const info = obterInfoTP(base.telefone);
+      if (info.tags.size > 0) {
+        base.tags = Array.from(info.tags);
         base.origem = 'Cadastros+TP'; // tem registro em ambos
+      }
+      if (info.dataLead) base.data_lead = info.dataLead;
+      // Quem Alocou (vem da tabela crm_alocacoes)
+      if (base.cod && !base.quem_alocou) {
+        const qa = indiceAlocacaoPorCod.get(base.cod);
+        if (qa) base.quem_alocou = qa;
       }
       return base;
     };
@@ -282,12 +315,17 @@ export async function POST(req: NextRequest) {
       } else if (stageLower.includes('em operação') || stageLower.includes('em operacao')) {
         // Em operação: cruza ativados com bi_entregas via endpoint
         resultado = await buscarEmOperacao(leadsPorAtivacao, dataInicioStr, dataFimStr);
-        // Enriquece com tags TP
+        // Enriquece com tags TP + data_lead + quem_alocou (mesmos campos do helper `enriquecer`)
         resultado = resultado.map(lead => {
-          const tags = obterTagsDoLead(lead.telefone);
-          if (tags.length > 0) {
-            lead.tags = tags;
+          const info = obterInfoTP(lead.telefone);
+          if (info.tags.size > 0) {
+            lead.tags = Array.from(info.tags);
             lead.origem = 'Cadastros+TP';
+          }
+          if (info.dataLead) lead.data_lead = info.dataLead;
+          if (lead.cod && !lead.quem_alocou) {
+            const qa = indiceAlocacaoPorCod.get(lead.cod);
+            if (qa) lead.quem_alocou = qa;
           }
           return lead;
         });
@@ -337,14 +375,24 @@ export async function POST(req: NextRequest) {
         return { ...r, cadastro: cad };
       });
 
+      // Helper que adiciona quem_alocou a um LeadExport TP (tp já tem data_lead
+      // e tags vindo da planilha via tpItemToExport; falta só a alocação)
+      const enriquecerAlocacaoTP = (le: LeadExport): LeadExport => {
+        if (le.cod && !le.quem_alocou) {
+          const qa = indiceAlocacaoPorCod.get(le.cod);
+          if (qa) le.quem_alocou = qa;
+        }
+        return le;
+      };
+
       if (stageLower.includes('leads com tag tp') || stageLower.includes('tag tp')) {
         // Todos da planilha — cadastro pode ser null
-        resultado = tpComCadastro.map(r => tpItemToExport(r));
+        resultado = tpComCadastro.map(r => enriquecerAlocacaoTP(tpItemToExport(r)));
       } else if (stageLower.includes('tp com cadastro') || stageLower === 'com cadastro') {
         // Tem cadastro E data_cadastro no período
         resultado = tpComCadastro
           .filter(r => r.cadastro && dentroDoPeriodo(r.cadastro.data_cadastro))
-          .map(r => tpItemToExport(r));
+          .map(r => enriquecerAlocacaoTP(tpItemToExport(r)));
       } else if (stageLower.includes('tp ativados') || stageLower === 'ativados') {
         // Cadastrado no período + status_api='ativo'. Se data_ativacao existir,
         // respeita período; se for null, aceita (alinhado ao analytics).
@@ -367,7 +415,7 @@ export async function POST(req: NextRequest) {
         const mapaOp = new Map(comOperacao.map(o => [o.cod, o]));
 
         resultado = ativados.map(r => {
-          const base = tpItemToExport(r);
+          const base = enriquecerAlocacaoTP(tpItemToExport(r));
           const op = r.cadastro ? mapaOp.get(String(r.cadastro.cod)) : null;
           if (op) {
             base.em_operacao = true;
@@ -394,7 +442,7 @@ export async function POST(req: NextRequest) {
         resultado = ativados
           .filter(r => r.cadastro && codsOp.has(String(r.cadastro.cod)))
           .map(r => {
-            const base = tpItemToExport(r);
+            const base = enriquecerAlocacaoTP(tpItemToExport(r));
             const op = comOperacao.find(o => o.cod === String(r.cadastro.cod));
             if (op) {
               base.em_operacao = true;
