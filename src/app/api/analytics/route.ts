@@ -96,19 +96,29 @@ export async function GET(req: NextRequest) {
       ativacoesPorOperador[l.quem_ativou] = (ativacoesPorOperador[l.quem_ativou] || 0) + 1;
     });
 
-    // Cadastros por dia (data_cadastro)
+    // Cadastros / Ativados por dia — ambos usam as MESMAS chaves de dia
+    // (o range completo do período) pra o gráfico não ter "buracos".
     const cadastrosPorDia: Record<string, number> = {};
+    const ativadosPorDia: Record<string, number> = {};
     const hojeGrafico = new Date(); hojeGrafico.setHours(23, 59, 59, 999);
     const diaAtual = new Date(dataLimiteInicio);
     const limiteGrafico = dataLimiteFim < hojeGrafico ? dataLimiteFim : hojeGrafico;
     while (diaAtual <= limiteGrafico) {
-      cadastrosPorDia[diaAtual.toISOString().split('T')[0]] = 0;
+      const chave = diaAtual.toISOString().split('T')[0];
+      cadastrosPorDia[chave] = 0;
+      ativadosPorDia[chave] = 0;
       diaAtual.setDate(diaAtual.getDate() + 1);
     }
     leadsPorCadastro.forEach((l: any) => {
       if (l.data_cadastro) {
         const dia = l.data_cadastro.split('T')[0];
         if (cadastrosPorDia[dia] !== undefined) cadastrosPorDia[dia]++;
+      }
+    });
+    leadsPorAtivacao.forEach((l: any) => {
+      if (l.data_ativacao) {
+        const dia = l.data_ativacao.split('T')[0];
+        if (ativadosPorDia[dia] !== undefined) ativadosPorDia[dia]++;
       }
     });
 
@@ -560,6 +570,9 @@ export async function GET(req: NextRequest) {
     // Agora conta TODAS (manuais + importadas) para bater com a realidade.
     let totalAlocados = 0;
     let alocacoesPorOperador: Record<string, number> = {};
+    const alocacoesPorDia: Record<string, number> = {};
+    // Pré-zerar todas as chaves de dia do período (mesma janela de cadastros/ativados)
+    Object.keys(cadastrosPorDia).forEach(k => { alocacoesPorDia[k] = 0; });
     try {
       const alocResp = await fetch(`${BI_API_URL}/api/crm/alocacao?limit=50000&todos=true`, {
         headers: { 'Content-Type': 'application/json', ...(CRM_SERVICE_KEY ? { 'x-service-key': CRM_SERVICE_KEY } : {}) },
@@ -580,10 +593,15 @@ export async function GET(req: NextRequest) {
 
       totalAlocados = alocacoesPeriodo.length;
 
-      // Agrupar por quem_alocou
+      // Agrupar por quem_alocou E por dia (pro gráfico)
       alocacoesPeriodo.forEach((a: any) => {
         const op = a.quem_alocou || 'N/I';
         alocacoesPorOperador[op] = (alocacoesPorOperador[op] || 0) + 1;
+        const fonte = a.data_prevista || a.created_at;
+        if (fonte) {
+          const dia = String(fonte).split('T')[0];
+          if (alocacoesPorDia[dia] !== undefined) alocacoesPorDia[dia]++;
+        }
       });
 
       console.log(`[Analytics] Alocações período (por data_prevista): ${totalAlocados} de ${todasAlocacoes.length} total`);
@@ -639,7 +657,12 @@ export async function GET(req: NextRequest) {
         tpPorRegiao: Object.entries(tpPorRegiao).map(([r, q]) => ({ regiao: r, quantidade: q })).sort((a, b) => b.quantidade - a.quantidade),
         porOperador: Object.entries(ativacoesPorOperador).map(([o, q]) => ({ operador: o, quantidade: q })).sort((a, b) => b.quantidade - a.quantidade),
         porOperadorAlocacao: Object.entries(alocacoesPorOperador).map(([o, q]) => ({ operador: o, quantidade: q })).sort((a, b) => b.quantidade - a.quantidade),
-        porDia: Object.keys(cadastrosPorDia).map(data => ({ data, cadastros: cadastrosPorDia[data], leadsCrm: leadsCrmPorDia[data] || 0 })),
+        porDia: Object.keys(cadastrosPorDia).map(data => ({
+          data,
+          cadastros: cadastrosPorDia[data] || 0,
+          ativados: ativadosPorDia[data] || 0,
+          alocacoes: alocacoesPorDia[data] || 0,
+        })),
         filtros: { dataInicio: dataInicioStr, dataFim: dataFimStr, regiao: regiao || 'Todas' },
       },
     });
