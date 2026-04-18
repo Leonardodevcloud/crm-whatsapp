@@ -105,9 +105,6 @@ type LeadExport = {
   // Tags/origem
   tags: string[];                    // vindas da planilha TP (se aplicável)
   origem: string | null;
-  // CRM WhatsApp
-  stage: string | null;
-  status: string | null;
 };
 
 // ============================================================================
@@ -387,12 +384,16 @@ export async function POST(req: NextRequest) {
 
       if (stageLower.includes('leads com tag tp') || stageLower.includes('tag tp')) {
         // Todos da planilha — cadastro pode ser null
-        resultado = tpComCadastro.map(r => enriquecerAlocacaoTP(tpItemToExport(r)));
+        resultado = await enriquecerComOperacao(
+          tpComCadastro.map(r => enriquecerAlocacaoTP(tpItemToExport(r)))
+        );
       } else if (stageLower.includes('tp com cadastro') || stageLower === 'com cadastro') {
         // Tem cadastro E data_cadastro no período
-        resultado = tpComCadastro
-          .filter(r => r.cadastro && dentroDoPeriodo(r.cadastro.data_cadastro))
-          .map(r => enriquecerAlocacaoTP(tpItemToExport(r)));
+        resultado = await enriquecerComOperacao(
+          tpComCadastro
+            .filter(r => r.cadastro && dentroDoPeriodo(r.cadastro.data_cadastro))
+            .map(r => enriquecerAlocacaoTP(tpItemToExport(r)))
+        );
       } else if (stageLower.includes('tp ativados') || stageLower === 'ativados') {
         // Cadastrado no período + status_api='ativo'. Se data_ativacao existir,
         // respeita período; se for null, aceita (alinhado ao analytics).
@@ -503,8 +504,6 @@ function toLeadExport(l: any): LeadExport {
     quem_alocou: l.quem_alocou || null,
     tags: [],
     origem: 'Cadastros',
-    stage: null,
-    status: null,
   };
 }
 
@@ -534,8 +533,6 @@ function tpItemToExport(item: {
     quem_alocou: cad?.quem_alocou || null,
     tags: item.tag ? [item.tag] : [],
     origem: 'TP-Planilha',
-    stage: null,
-    status: null,
   };
 }
 
