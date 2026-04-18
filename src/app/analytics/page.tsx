@@ -25,6 +25,18 @@ function InfoTooltip({ text }: { text: string }) {
 
 interface AnalyticsData {
   kpis: { totalCadastros: number; totalAtivos: number; totalAlocados: number; totalInativos: number; naoAtivados: number; emOperacao: number; naoOperando: number; taxaConversao: number; taxaOperacao: number };
+  periodoAnterior?: {
+    dataInicio: string;
+    dataFim: string;
+    duracaoDias: number;
+    totalCadastros: number;
+    totalAtivos: number;
+    totalAlocados: number;
+    emOperacao: number;
+  };
+  velocidade?: {
+    cadastroAtivacao: { media: number | null; mediana: number | null; p75: number | null; amostra: number };
+  };
   funil: Array<{ stage: string; quantidade: number; cor: string; base: number }>;
   funilTP: Array<{ stage: string; quantidade: number; cor: string; base: number }>;
   funilTP90d?: Array<{ stage: string; quantidade: number; cor: string; base: number }>;
@@ -668,6 +680,74 @@ function ChartDia({ porDia }: { porDia: DiaPoint[] }) {
   );
 }
 
+// ═══ Delta — badge de variação vs período anterior ═══
+function Delta({ atual, anterior, sufixoLabel }: { atual: number; anterior: number | undefined; sufixoLabel?: string }) {
+  if (anterior === undefined || anterior === null) return null;
+  // Quando ambos zero, não mostra badge (sem sinal)
+  if (atual === 0 && anterior === 0) return null;
+  // Quando anterior=0 e atual>0, variação = "+∞" tecnicamente. Simplificamos pra "novo"
+  if (anterior === 0) {
+    return (
+      <span className="inline-flex items-center gap-0.5 text-[11px] font-semibold text-emerald-600">
+        ↑ novo{sufixoLabel && <span className="text-gray-400 font-normal ml-1">{sufixoLabel}</span>}
+      </span>
+    );
+  }
+  const delta = ((atual - anterior) / anterior) * 100;
+  const abs = Math.abs(delta);
+  const arredondado = abs < 10 ? abs.toFixed(1) : Math.round(abs).toString();
+  const positivo = delta > 0;
+  const neutro = delta === 0;
+  const cor = neutro ? 'text-gray-400' : positivo ? 'text-emerald-600' : 'text-red-500';
+  const seta = neutro ? '→' : positivo ? '↑' : '↓';
+  return (
+    <span className={`inline-flex items-center gap-0.5 text-[11px] font-semibold ${cor}`} title={`Anterior: ${anterior.toLocaleString()}`}>
+      {seta} {arredondado}%{sufixoLabel && <span className="text-gray-400 font-normal ml-1">{sufixoLabel}</span>}
+    </span>
+  );
+}
+
+// ═══ Card Velocidade de conversão (Cadastro → Ativação) ═══
+function CardVelocidade({
+  velocidade,
+}: {
+  velocidade: NonNullable<AnalyticsData['velocidade']>;
+}) {
+  const v = velocidade.cadastroAtivacao;
+  const semDados = !v || v.amostra === 0;
+  return (
+    <div className="card p-5">
+      <h3 className="text-lg font-bold text-gray-800 flex items-center gap-2 mb-1">
+        <Zap className="w-5 h-5 text-amber-500" /> Velocidade de conversão
+      </h3>
+      <p className="text-xs text-gray-500 mb-4">
+        Dias entre cadastro e ativação {v?.amostra ? <span className="text-gray-400">· {v.amostra} leads analisados</span> : null}
+      </p>
+      {semDados ? (
+        <p className="text-sm text-gray-400 text-center py-6">Nenhum lead ativado no período</p>
+      ) : (
+        <div className="grid grid-cols-3 gap-3">
+          <div className="bg-amber-50 border border-amber-100 rounded-xl p-4 text-center">
+            <p className="text-3xl font-bold text-amber-600">{v.mediana}</p>
+            <p className="text-[11px] text-gray-500 mt-0.5 uppercase tracking-wide">Mediana</p>
+            <p className="text-[10px] text-gray-400 mt-1">metade ativa até este dia</p>
+          </div>
+          <div className="bg-white border rounded-xl p-4 text-center">
+            <p className="text-3xl font-bold text-gray-700">{v.media?.toFixed(1)}</p>
+            <p className="text-[11px] text-gray-500 mt-0.5 uppercase tracking-wide">Média</p>
+            <p className="text-[10px] text-gray-400 mt-1">sensível a outliers</p>
+          </div>
+          <div className="bg-white border rounded-xl p-4 text-center">
+            <p className="text-3xl font-bold text-gray-700">{v.p75}</p>
+            <p className="text-[11px] text-gray-500 mt-0.5 uppercase tracking-wide">P75</p>
+            <p className="text-[10px] text-gray-400 mt-1">75% ativam até este dia</p>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function AnalyticsContent() {
   const [data, setData] = useState<AnalyticsData | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -700,7 +780,7 @@ function AnalyticsContent() {
   if (error) return <div className="p-6 bg-red-50 rounded-lg text-red-700 flex items-center gap-2"><AlertCircle className="w-5 h-5" /> {error}</div>;
   if (!data) return null;
 
-  const { kpis, funil, funilTP, funilTP90d, funilTP90dMeta, conversaoOperacao, porRegiao, naoAtivadosPorRegiao, tpPorRegiao, porOperador, porOperadorAlocacao, porDia } = data;
+  const { kpis, periodoAnterior, velocidade, funil, funilTP, funilTP90d, funilTP90dMeta, conversaoOperacao, porRegiao, naoAtivadosPorRegiao, tpPorRegiao, porOperador, porOperadorAlocacao, porDia } = data;
 
   return (
     <div className="p-4 md:p-6 max-w-[1600px] mx-auto space-y-6">
@@ -721,11 +801,82 @@ function AnalyticsContent() {
 
       {/* KPIs — Mortos/Ressuscitados removidos a pedido */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <div className="card p-5"><div className="flex items-center gap-3"><div className="w-12 h-12 bg-purple-100 rounded-xl flex items-center justify-center"><Users className="w-6 h-6 text-purple-600" /></div><div><p className="text-3xl font-bold text-purple-600">{kpis.totalCadastros.toLocaleString()}</p><p className="text-xs text-gray-500">Total Cadastros</p><p className="text-xs text-gray-400 mt-0.5">Não ativados: {kpis.naoAtivados}</p></div></div></div>
-        <div className="card p-5"><div className="flex items-center gap-3"><div className="w-12 h-12 bg-green-100 rounded-xl flex items-center justify-center"><UserCheck className="w-6 h-6 text-green-600" /></div><div><p className="text-3xl font-bold text-green-600">{kpis.totalAtivos.toLocaleString()}</p><p className="text-xs text-gray-500">Ativados</p><p className="text-xs text-green-500 mt-0.5">{kpis.taxaConversao}% conversão</p></div></div></div>
-        <div className="card p-5"><div className="flex items-center gap-3"><div className="w-12 h-12 bg-violet-100 rounded-xl flex items-center justify-center"><UserPlus className="w-6 h-6 text-violet-600" /></div><div><p className="text-3xl font-bold text-violet-600">{kpis.totalAlocados?.toLocaleString() || 0}</p><p className="text-xs text-gray-500">Alocados</p></div></div></div>
-        <div className="card p-5"><div className="flex items-center gap-3"><div className="w-12 h-12 bg-blue-100 rounded-xl flex items-center justify-center"><Truck className="w-6 h-6 text-blue-600" /></div><div><p className="text-3xl font-bold text-blue-600">{kpis.emOperacao}</p><p className="text-xs text-gray-500">Em Operação</p><p className="text-xs text-blue-500 mt-0.5">{kpis.taxaOperacao}% taxa real</p></div></div></div>
+        <div className="card p-5">
+          <div className="flex items-center gap-3">
+            <div className="w-12 h-12 bg-purple-100 rounded-xl flex items-center justify-center flex-shrink-0">
+              <Users className="w-6 h-6 text-purple-600" />
+            </div>
+            <div className="min-w-0">
+              <div className="flex items-center gap-2 flex-wrap">
+                <p className="text-3xl font-bold text-purple-600">{kpis.totalCadastros.toLocaleString()}</p>
+                <Delta atual={kpis.totalCadastros} anterior={periodoAnterior?.totalCadastros} />
+              </div>
+              <p className="text-xs text-gray-500">Total Cadastros</p>
+              <p className="text-xs text-gray-400 mt-0.5">Não ativados: {kpis.naoAtivados}</p>
+            </div>
+          </div>
+        </div>
+        <div className="card p-5">
+          <div className="flex items-center gap-3">
+            <div className="w-12 h-12 bg-green-100 rounded-xl flex items-center justify-center flex-shrink-0">
+              <UserCheck className="w-6 h-6 text-green-600" />
+            </div>
+            <div className="min-w-0">
+              <div className="flex items-center gap-2 flex-wrap">
+                <p className="text-3xl font-bold text-green-600">{kpis.totalAtivos.toLocaleString()}</p>
+                <Delta atual={kpis.totalAtivos} anterior={periodoAnterior?.totalAtivos} />
+              </div>
+              <p className="text-xs text-gray-500">Ativados</p>
+              <p className="text-xs text-green-500 mt-0.5">{kpis.taxaConversao}% conversão</p>
+            </div>
+          </div>
+        </div>
+        <div className="card p-5">
+          <div className="flex items-center gap-3">
+            <div className="w-12 h-12 bg-violet-100 rounded-xl flex items-center justify-center flex-shrink-0">
+              <UserPlus className="w-6 h-6 text-violet-600" />
+            </div>
+            <div className="min-w-0">
+              <div className="flex items-center gap-2 flex-wrap">
+                <p className="text-3xl font-bold text-violet-600">{kpis.totalAlocados?.toLocaleString() || 0}</p>
+                <Delta atual={kpis.totalAlocados || 0} anterior={periodoAnterior?.totalAlocados} />
+              </div>
+              <p className="text-xs text-gray-500">Alocados</p>
+            </div>
+          </div>
+        </div>
+        <div className="card p-5">
+          <div className="flex items-center gap-3">
+            <div className="w-12 h-12 bg-blue-100 rounded-xl flex items-center justify-center flex-shrink-0">
+              <Truck className="w-6 h-6 text-blue-600" />
+            </div>
+            <div className="min-w-0">
+              <div className="flex items-center gap-2 flex-wrap">
+                <p className="text-3xl font-bold text-blue-600">{kpis.emOperacao}</p>
+                <Delta atual={kpis.emOperacao} anterior={periodoAnterior?.emOperacao} />
+              </div>
+              <p className="text-xs text-gray-500">Em Operação</p>
+              <p className="text-xs text-blue-500 mt-0.5">{kpis.taxaOperacao}% taxa real</p>
+            </div>
+          </div>
+        </div>
       </div>
+
+      {/* Barra de contexto: período anterior usado no delta */}
+      {periodoAnterior && (
+        <div className="text-xs text-gray-500 flex items-center gap-2 px-1">
+          <Info className="w-3.5 h-3.5 text-gray-400" />
+          Variação comparada ao período anterior de mesma duração:{' '}
+          <span className="font-medium text-gray-600">
+            {periodoAnterior.dataInicio.split('-').reverse().join('/')}
+            {' → '}
+            {periodoAnterior.dataFim.split('-').reverse().join('/')}
+          </span>
+        </div>
+      )}
+
+      {/* Velocidade de conversão (Cadastro → Ativação) */}
+      {velocidade && <CardVelocidade velocidade={velocidade} />}
 
       {/* Conversão em Operação */}
       <div className="card p-5 bg-green-50 border border-green-200">
