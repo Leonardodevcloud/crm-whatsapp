@@ -98,9 +98,13 @@ export async function GET(req: NextRequest) {
     // Para cada lead cadastrado no período que também foi ativado:
     //   dias entre cadastro e ativação.
     // Guardamos todos os deltas pra calcular média, mediana e P75.
+    // IMPORTANTE: iteramos sobre leadsPorAtivacao (ativados NO PERÍODO), não
+    // sobre leadsPorCadastro. Um lead pode ter cadastrado em março e ativado
+    // em abril — com o filtro = abril, ele entra nos 250 ativados e deve entrar
+    // também na estatística (delta de cadastro→ativação independe de quando cadastrou).
     const deltasCadAtiv: number[] = [];
-    for (const l of leadsPorCadastro) {
-      if (!l.data_ativacao) continue;
+    for (const l of leadsPorAtivacao) {
+      if (!l.data_cadastro) continue;
       const tCad = new Date(l.data_cadastro).getTime();
       const tAtv = new Date(l.data_ativacao).getTime();
       if (isNaN(tCad) || isNaN(tAtv)) continue;
@@ -552,6 +556,38 @@ export async function GET(req: NextRequest) {
     const leadsTPAtivados    = funilAtual.ativadosItens;
     const tpPorRegiao        = funilAtual.porRegiao;
 
+    // ─── Velocidade TP (data_lead_tp → data_ativacao) ───
+    // Para cada lead da planilha TP que tem match com cadastro E tem data_ativacao:
+    //   se data_ativacao está no período atual, conta o delta em dias.
+    // Isso mostra quanto tempo um lead TP leva pra virar ativo depois de chegar.
+    const deltasTpAtiv: number[] = [];
+    for (const linha of linhasPlanilhaTP) {
+      if (!linha.dataISO) continue;
+      // achar match no índice de cadastros
+      let cad: CadastroIndex | null = null;
+      for (const v of (linha.variacoes || [linha.telCanonico])) {
+        const m = indiceTelCadastro.get(v);
+        if (m) { cad = m; break; }
+      }
+      if (!cad) {
+        const fp = fingerprint8(linha.telCanonico);
+        if (fp) {
+          const candidatos = indiceFingerprint.get(fp);
+          if (candidatos && candidatos.length === 1) cad = candidatos[0];
+        }
+      }
+      if (!cad || !cad.data_ativacao) continue;
+      // só contar se a ativação foi no período selecionado
+      if (!dentroDoPeriodo(cad.data_ativacao)) continue;
+      const tLead = new Date(linha.dataISO).getTime();
+      const tAtv = new Date(cad.data_ativacao).getTime();
+      if (isNaN(tLead) || isNaN(tAtv)) continue;
+      const dias = Math.round((tAtv - tLead) / msDia);
+      if (dias >= 0 && dias <= 365) deltasTpAtiv.push(dias);
+    }
+    const velocidadeTpAtiv = estatDias(deltasTpAtiv);
+    console.log(`[Analytics] Velocidade: cad→atv amostra=${velocidadeCadAtiv.amostra} mediana=${velocidadeCadAtiv.mediana} | tp→atv amostra=${velocidadeTpAtiv.amostra} mediana=${velocidadeTpAtiv.mediana}`);
+
     // Mortos/ressuscitados removidos do analytics conforme solicitação
     // (conceitos seguem existindo no kanban, cron de enriquecimento e types)
 
@@ -707,11 +743,12 @@ export async function GET(req: NextRequest) {
           emOperacao: emOperacaoAnt,
         },
 
-        // Time-to-X — velocidade de conversão. Só cadastro→ativação por enquanto
-        // (ativação→alocação exigiria join com crm_alocacoes no frontend;
-        // ativação→primeira entrega exigiria mais queries ao backend).
+        // Time-to-X — velocidade de conversão.
+        //  - cadastroAtivacao: dias entre cadastro e ativação (todos os ativados no período)
+        //  - tpLeadAtivacao:   dias entre chegada na planilha TP e ativação (só quem veio do TP)
         velocidade: {
           cadastroAtivacao: velocidadeCadAtiv, // { media, mediana, p75, amostra }
+          tpLeadAtivacao:   velocidadeTpAtiv,
         },
         funil: [
           // FIX: todas as etapas agora são comparadas contra Total Cadastros
