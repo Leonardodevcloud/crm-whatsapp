@@ -5,7 +5,7 @@ import AuthLayout from '@/components/AuthLayout';
 import { useApi } from '@/lib/hooks';
 import {
   Users, UserCheck, UserPlus, TrendingUp, RefreshCw, Loader2, AlertCircle,
-  MapPin, Calendar, Truck, XCircle, Tag, Info, BarChart3, Zap, Plus, X, Download, Search,
+  MapPin, Calendar, Truck, XCircle, Tag, Info, BarChart3, Zap, Plus, X, Download, Search, Star,
 } from 'lucide-react';
 
 function InfoTooltip({ text }: { text: string }) {
@@ -37,6 +37,21 @@ interface AnalyticsData {
   velocidade?: {
     cadastroAtivacao: { media: number | null; mediana: number | null; p75: number | null; amostra: number };
     tpLeadAtivacao:   { media: number | null; mediana: number | null; p75: number | null; amostra: number };
+  };
+  qualidadePorOperador?: Array<{
+    operador: string;
+    ativados: number;
+    emOperacao: number;
+    taxaOp: number;
+    tempoMedioDias: number | null;
+  }>;
+  retencao?: {
+    baseAnt: number;
+    rodaramNoAtual: number;
+    taxaPct: number;
+    churnAbsoluto: number;
+    periodoAnterior: { dataInicio: string; dataFim: string };
+    periodoAtual: { dataInicio: string; dataFim: string };
   };
   funil: Array<{ stage: string; quantidade: number; cor: string; base: number }>;
   funil90d?: Array<{ stage: string; quantidade: number; cor: string; base: number }>;
@@ -594,6 +609,36 @@ function ChartDia({ porDia }: { porDia: DiaPoint[] }) {
     { nome: 'Alocações', campo: 'alocacoes' as const, cor: '#8B5CF6', corClara: 'rgba(139, 92, 246, 0.22)' },
   ];
 
+  // ─── Projeção: até que nível cada série deve chegar se o ritmo continuar ───
+  // Só ativa se o período inclui o dia de hoje (não faz sentido projetar passado).
+  // Índice de "hoje" no array porDia → comparar data.
+  const hojeStr = new Date().toISOString().slice(0, 10);
+  const idxHoje = porDia.findIndex(d => d.data === hojeStr);
+  // Se hoje está dentro do range e ainda restam dias futuros...
+  const temProjecao = idxHoje >= 0 && idxHoje < N - 1;
+
+  // Ritmo = soma acumulada até hoje ÷ (idxHoje + 1 dias). Projeção = ritmo × N dias.
+  const projecaoPorSerie = temProjecao
+    ? series.map(s => {
+        const totalAteHoje = porDia.slice(0, idxHoje + 1).reduce((sum, d) => sum + d[s.campo], 0);
+        const ritmoDiario = totalAteHoje / (idxHoje + 1);
+        const projTotal = Math.round(ritmoDiario * N);
+        // Último ponto real é idxHoje; linha vai daí até (N-1) mantendo ritmo
+        // Altura da projeção no último dia = "total projetado" distribuído
+        return {
+          campo: s.campo,
+          cor: s.cor,
+          total: projTotal,
+          // Projeção: no último ponto do gráfico, mostra o VALOR DIÁRIO esperado
+          // Mantemos a mesma altura do último dia real (conservador visual)
+          yInicio: yAt(porDia[idxHoje][s.campo]),
+          yFim: yAt(ritmoDiario), // valor diário médio projetado
+          xInicio: xAt(idxHoje),
+          xFim: xAt(N - 1),
+        };
+      })
+    : [];
+
   // Decidir quais rótulos de X mostrar (não mais que ~12 pra não embolar)
   const passo = Math.max(1, Math.ceil(N / 12));
   const formatarDiaMes = (s: string) => { const p = s.split('-'); return `${p[2]}/${p[1]}`; };
@@ -607,14 +652,39 @@ function ChartDia({ porDia }: { porDia: DiaPoint[] }) {
       <h3 className="text-lg font-bold text-gray-800 flex items-center gap-2 mb-1">
         <Calendar className="w-5 h-5 text-teal-600" /> Evolução diária
       </h3>
-      <div className="flex items-center gap-5 mb-4 text-xs text-gray-600 flex-wrap">
+      <div className="flex items-center gap-5 mb-3 text-xs text-gray-600 flex-wrap">
         {series.map(s => (
           <span key={s.nome} className="flex items-center gap-1.5">
             <span className="w-3 h-3 rounded-full inline-block" style={{ backgroundColor: s.cor }} />
             {s.nome}
           </span>
         ))}
+        {temProjecao && (
+          <span className="flex items-center gap-1.5 text-amber-600 font-medium">
+            <span className="w-6 border-t-2 border-dashed border-amber-500 inline-block" />
+            Projeção até fim do período
+          </span>
+        )}
       </div>
+
+      {/* Resumo de projeção (quando aplicável) */}
+      {temProjecao && (
+        <div className="mb-4 px-3 py-2 bg-amber-50 border border-amber-100 rounded-lg text-xs text-gray-700 leading-relaxed flex items-start gap-2">
+          <Info className="w-3.5 h-3.5 text-amber-600 flex-shrink-0 mt-0.5" />
+          <span>
+            <strong>Se o ritmo atual se mantiver</strong>, o período deve terminar com:{' '}
+            {projecaoPorSerie.map((p, i) => {
+              const nome = series.find(s => s.campo === p.campo)?.nome || p.campo;
+              return (
+                <span key={p.campo}>
+                  {i > 0 ? ' · ' : ''}
+                  <strong style={{ color: p.cor }}>{p.total.toLocaleString()} {nome.toLowerCase()}</strong>
+                </span>
+              );
+            })}
+          </span>
+        </div>
+      )}
 
       <div className="relative w-full">
         <svg ref={svgRef} width={svgW} height={H} style={{ display: 'block', overflow: 'visible' }}>
@@ -653,6 +723,33 @@ function ChartDia({ porDia }: { porDia: DiaPoint[] }) {
               </g>
             );
           })}
+
+          {/* Projeção: linhas tracejadas do último dia real até fim do período */}
+          {temProjecao && projecaoPorSerie.map(p => (
+            <line
+              key={`proj-${p.campo}`}
+              x1={p.xInicio} y1={p.yInicio}
+              x2={p.xFim} y2={p.yFim}
+              stroke={p.cor} strokeWidth={2} strokeDasharray="5 4"
+              opacity={0.5}
+            />
+          ))}
+
+          {/* Linha vertical destacando o dia de hoje */}
+          {temProjecao && (
+            <g>
+              <line
+                x1={xAt(idxHoje)} x2={xAt(idxHoje)}
+                y1={PADDING.top} y2={PADDING.top + plotH}
+                stroke="#F59E0B" strokeWidth={1.5} strokeDasharray="2 3"
+                opacity={0.5}
+              />
+              <text
+                x={xAt(idxHoje)} y={PADDING.top - 6}
+                textAnchor="middle" fontSize="10" fill="#F59E0B" fontWeight="700"
+              >hoje</text>
+            </g>
+          )}
 
           {/* Rótulos X */}
           {porDia.map((d, i) => {
@@ -990,6 +1087,156 @@ function CardVelocidade({
   );
 }
 
+// ═══ Card Qualidade por Operador ═══
+function CardQualidadeOperador({
+  itens,
+}: {
+  itens: NonNullable<AnalyticsData['qualidadePorOperador']>;
+}) {
+  if (!itens || itens.length === 0) return null;
+  // Referência: taxa média do grupo
+  const mediaTaxa = Math.round(itens.reduce((s, i) => s + i.taxaOp, 0) / itens.length);
+
+  return (
+    <div className="card p-5">
+      <h3 className="text-lg font-bold text-gray-800 flex items-center gap-2 mb-1">
+        <Star className="w-5 h-5 text-amber-500" /> Qualidade por Operador
+      </h3>
+      <p className="text-xs text-gray-600 mb-4 leading-relaxed">
+        Não basta ativar muito — o que importa é <strong>quantos dos ativados estão de fato rodando</strong>.
+        Quem tem taxa baixa pode estar ativando leads fracos. Taxa média do grupo: <strong>{mediaTaxa}%</strong>.
+      </p>
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="text-xs text-gray-500 uppercase tracking-wide border-b">
+              <th className="text-left py-2 pr-2 font-medium">Operador</th>
+              <th className="text-right py-2 px-2 font-medium">Ativados</th>
+              <th className="text-right py-2 px-2 font-medium">Em Operação</th>
+              <th className="text-right py-2 px-2 font-medium">Taxa</th>
+              <th className="text-right py-2 pl-2 font-medium" title="Tempo médio em dias entre cadastro e ativação">Tempo médio</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y">
+            {itens.map((item) => {
+              const acima = item.taxaOp > mediaTaxa;
+              const muitoAbaixo = item.taxaOp < mediaTaxa - 10;
+              const emoji = muitoAbaixo ? '⚠️' : acima && item.taxaOp >= mediaTaxa + 10 ? '⭐' : null;
+              const corTaxa =
+                muitoAbaixo ? 'text-red-600' :
+                acima ? 'text-emerald-600' :
+                'text-gray-700';
+              return (
+                <tr key={item.operador} className="hover:bg-gray-50">
+                  <td className="py-3 pr-2 font-medium text-gray-800 whitespace-nowrap">
+                    {item.operador} {emoji}
+                  </td>
+                  <td className="text-right py-3 px-2 tabular-nums">{item.ativados}</td>
+                  <td className="text-right py-3 px-2 tabular-nums text-blue-600">{item.emOperacao}</td>
+                  <td className={`text-right py-3 px-2 font-bold tabular-nums ${corTaxa}`}>
+                    {item.taxaOp}%
+                  </td>
+                  <td className="text-right py-3 pl-2 tabular-nums text-gray-600">
+                    {item.tempoMedioDias !== null ? `${item.tempoMedioDias} d` : '—'}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      <p className="text-[11px] text-gray-400 mt-3">
+        ⭐ acima de {mediaTaxa + 10}% &nbsp;&nbsp;⚠️ abaixo de {mediaTaxa - 10}% &nbsp;&nbsp; Taxa = operando ÷ ativados
+      </p>
+    </div>
+  );
+}
+
+// ═══ Card Retenção (ativados no período anterior que rodaram no atual) ═══
+function CardRetencao({
+  retencao,
+}: {
+  retencao: NonNullable<AnalyticsData['retencao']>;
+}) {
+  const { baseAnt, rodaramNoAtual, taxaPct, churnAbsoluto, periodoAnterior, periodoAtual } = retencao;
+
+  if (baseAnt === 0) {
+    return (
+      <div className="card p-5">
+        <h3 className="text-lg font-bold text-gray-800 flex items-center gap-2 mb-2">
+          <TrendingUp className="w-5 h-5 text-indigo-600" /> Retenção de Ativados
+        </h3>
+        <p className="text-sm text-gray-400 text-center py-6">Sem leads ativados no período anterior para calcular retenção.</p>
+      </div>
+    );
+  }
+
+  const formatBR = (s: string) => s.split('-').reverse().join('/');
+  // Tom da taxa
+  const corTaxa =
+    taxaPct >= 60 ? 'text-emerald-600' :
+    taxaPct >= 40 ? 'text-amber-600' :
+    'text-red-600';
+  const alertaTaxa = taxaPct < 40;
+
+  return (
+    <div className="card p-5">
+      <h3 className="text-lg font-bold text-gray-800 flex items-center gap-2 mb-1">
+        <TrendingUp className="w-5 h-5 text-indigo-600" /> Retenção de Ativados
+      </h3>
+      <p className="text-xs text-gray-600 mb-4 leading-relaxed">
+        Quantos motoboys ativados no período anterior continuam rodando no atual.
+        Baixa retenção indica que a ativação está trazendo profissionais que não engajam.
+      </p>
+
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+        <div className="bg-white border rounded-xl p-4">
+          <p className="text-3xl font-bold text-gray-700 tabular-nums">{baseAnt.toLocaleString()}</p>
+          <p className="text-xs font-bold text-gray-600 uppercase tracking-wide mt-1">Base</p>
+          <p className="text-[11px] text-gray-500 mt-0.5">
+            Ativados em {formatBR(periodoAnterior.dataInicio)} → {formatBR(periodoAnterior.dataFim)}
+          </p>
+        </div>
+
+        <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-4">
+          <p className="text-3xl font-bold text-emerald-600 tabular-nums">{rodaramNoAtual.toLocaleString()}</p>
+          <p className="text-xs font-bold text-gray-700 uppercase tracking-wide mt-1">Retidos</p>
+          <p className="text-[11px] text-gray-500 mt-0.5">
+            Rodaram em {formatBR(periodoAtual.dataInicio)} → {formatBR(periodoAtual.dataFim)}
+          </p>
+        </div>
+
+        <div className="bg-red-50 border border-red-200 rounded-xl p-4">
+          <p className="text-3xl font-bold text-red-600 tabular-nums">{churnAbsoluto.toLocaleString()}</p>
+          <p className="text-xs font-bold text-gray-700 uppercase tracking-wide mt-1">Churn</p>
+          <p className="text-[11px] text-gray-500 mt-0.5">Ativaram antes mas não rodaram agora</p>
+        </div>
+
+        <div className={`${alertaTaxa ? 'bg-red-50 border-red-200' : 'bg-indigo-50 border-indigo-200'} border rounded-xl p-4`}>
+          <p className={`text-3xl font-bold tabular-nums ${corTaxa}`}>{taxaPct}%</p>
+          <p className="text-xs font-bold text-gray-700 uppercase tracking-wide mt-1">Taxa de retenção</p>
+          <p className="text-[11px] text-gray-500 mt-0.5">
+            {taxaPct >= 60 ? 'Boa retenção' : taxaPct >= 40 ? 'Retenção média' : 'Retenção baixa'}
+          </p>
+        </div>
+      </div>
+
+      {/* Barra visual */}
+      <div className="mt-4">
+        <div className="flex items-center gap-2">
+          <div className="flex-1 h-4 bg-red-100 rounded-full overflow-hidden">
+            <div
+              className="h-full bg-emerald-500 rounded-full transition-all"
+              style={{ width: `${Math.min(100, taxaPct)}%` }}
+            />
+          </div>
+          <span className="text-xs font-bold text-gray-700 whitespace-nowrap">{rodaramNoAtual}/{baseAnt}</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function AnalyticsContent() {
   const [data, setData] = useState<AnalyticsData | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -1022,7 +1269,7 @@ function AnalyticsContent() {
   if (error) return <div className="p-6 bg-red-50 rounded-lg text-red-700 flex items-center gap-2"><AlertCircle className="w-5 h-5" /> {error}</div>;
   if (!data) return null;
 
-  const { kpis, periodoAnterior, velocidade, funil, funil90d, funilTP, funilTP90d, funilTP90dMeta, conversaoOperacao, porRegiao, naoAtivadosPorRegiao, tpPorRegiao, porOperador, porOperadorAlocacao, porDia } = data;
+  const { kpis, periodoAnterior, velocidade, qualidadePorOperador, retencao, funil, funil90d, funilTP, funilTP90d, funilTP90dMeta, conversaoOperacao, porRegiao, naoAtivadosPorRegiao, tpPorRegiao, porOperador, porOperadorAlocacao, porDia } = data;
 
   return (
     <div className="p-4 md:p-6 max-w-[1600px] mx-auto space-y-6">
@@ -1151,6 +1398,14 @@ function AnalyticsContent() {
 
       {/* Velocidade de conversão (Cadastro → Ativação) */}
       {velocidade && <CardVelocidade velocidade={velocidade} />}
+
+      {/* Retenção de ativados (ativados no período anterior que rodaram no atual) */}
+      {retencao && <CardRetencao retencao={retencao} />}
+
+      {/* Qualidade por Operador */}
+      {qualidadePorOperador && qualidadePorOperador.length > 0 && (
+        <CardQualidadeOperador itens={qualidadePorOperador} />
+      )}
 
       {/* Conversão em Operação */}
       <div className="card p-5 bg-green-50 border border-green-200">
