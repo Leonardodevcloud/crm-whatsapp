@@ -832,34 +832,64 @@ function CardVelocidade({
 }: {
   velocidade: NonNullable<AnalyticsData['velocidade']>;
 }) {
-  const renderSecao = (v: { media: number | null; mediana: number | null; p75: number | null; amostra: number }, titulo: string, subtitulo: string, corBase: string, corBorda: string) => {
+  const renderSecao = (
+    v: { media: number | null; mediana: number | null; p75: number | null; amostra: number },
+    titulo: string,
+    explicacao: string,
+    corDestaque: 'amber' | 'blue',
+  ) => {
     const semDados = !v || v.amostra === 0;
+    const bgDestaque = corDestaque === 'amber' ? 'bg-amber-50 border-amber-200' : 'bg-blue-50 border-blue-200';
+    const txtDestaque = corDestaque === 'amber' ? 'text-amber-600' : 'text-blue-600';
+
     return (
       <div>
-        <div className="flex items-center justify-between mb-2">
-          <div>
-            <h4 className="text-sm font-semibold text-gray-700">{titulo}</h4>
-            <p className="text-[11px] text-gray-500">{subtitulo} {v?.amostra ? <span className="text-gray-400">· {v.amostra} leads</span> : null}</p>
-          </div>
+        <div className="mb-3">
+          <h4 className="text-base font-bold text-gray-800">{titulo}</h4>
+          <p className="text-xs text-gray-600 mt-0.5">{explicacao}</p>
+          {v?.amostra ? (
+            <p className="text-[11px] text-gray-400 mt-0.5">Baseado em {v.amostra} leads ativados no período</p>
+          ) : null}
         </div>
+
         {semDados ? (
           <p className="text-sm text-gray-400 text-center py-6 border rounded-xl bg-gray-50">Sem dados no período</p>
         ) : (
-          <div className="grid grid-cols-3 gap-3">
-            <div className={`${corBase} border ${corBorda} rounded-xl p-4 text-center`}>
-              <p className={`text-3xl font-bold ${corBase.includes('amber') ? 'text-amber-600' : 'text-blue-600'}`}>{v.mediana}</p>
-              <p className="text-[11px] text-gray-500 mt-0.5 uppercase tracking-wide">Mediana</p>
-              <p className="text-[10px] text-gray-400 mt-1">metade ativa até este dia</p>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+            {/* MEDIANA — destaque */}
+            <div className={`${bgDestaque} border rounded-xl p-4`}>
+              <div className="flex items-baseline gap-2 mb-1">
+                <p className={`text-4xl font-bold ${txtDestaque}`}>{v.mediana}</p>
+                <p className="text-sm text-gray-500">dias</p>
+              </div>
+              <p className="text-xs font-bold text-gray-700 uppercase tracking-wide">Tempo típico</p>
+              <p className="text-[11px] text-gray-600 mt-1 leading-relaxed">
+                Metade dos leads ativa em até <strong>{v.mediana} {v.mediana === 1 ? 'dia' : 'dias'}</strong>. É o número mais confiável — não é afetado por casos extremos.
+              </p>
             </div>
-            <div className="bg-white border rounded-xl p-4 text-center">
-              <p className="text-3xl font-bold text-gray-700">{v.media?.toFixed(1)}</p>
-              <p className="text-[11px] text-gray-500 mt-0.5 uppercase tracking-wide">Média</p>
-              <p className="text-[10px] text-gray-400 mt-1">sensível a outliers</p>
+
+            {/* MÉDIA */}
+            <div className="bg-white border rounded-xl p-4">
+              <div className="flex items-baseline gap-2 mb-1">
+                <p className="text-4xl font-bold text-gray-700">{v.media?.toFixed(1)}</p>
+                <p className="text-sm text-gray-500">dias</p>
+              </div>
+              <p className="text-xs font-bold text-gray-700 uppercase tracking-wide">Média</p>
+              <p className="text-[11px] text-gray-600 mt-1 leading-relaxed">
+                Soma todos os dias ÷ total de leads. Útil pra comparar, mas <strong>um lead que demorou 60 dias puxa o número pra cima</strong>.
+              </p>
             </div>
-            <div className="bg-white border rounded-xl p-4 text-center">
-              <p className="text-3xl font-bold text-gray-700">{v.p75}</p>
-              <p className="text-[11px] text-gray-500 mt-0.5 uppercase tracking-wide" title="75% dos leads ativam até este número de dias">P75</p>
-              <p className="text-[10px] text-gray-400 mt-1">75% ativam até este dia</p>
+
+            {/* P75 */}
+            <div className="bg-white border rounded-xl p-4">
+              <div className="flex items-baseline gap-2 mb-1">
+                <p className="text-4xl font-bold text-gray-700">{v.p75}</p>
+                <p className="text-sm text-gray-500">dias</p>
+              </div>
+              <p className="text-xs font-bold text-gray-700 uppercase tracking-wide">Caso mais lento</p>
+              <p className="text-[11px] text-gray-600 mt-1 leading-relaxed">
+                <strong>3 de cada 4 leads</strong> ativam em até {v.p75} {v.p75 === 1 ? 'dia' : 'dias'}. Se você quer garantir que <em>quase todo mundo</em> ativa rápido, olha esse número.
+              </p>
             </div>
           </div>
         )}
@@ -869,27 +899,29 @@ function CardVelocidade({
 
   return (
     <div className="card p-5">
-      <h3 className="text-lg font-bold text-gray-800 flex items-center gap-2 mb-1">
+      <h3 className="text-lg font-bold text-gray-800 flex items-center gap-2 mb-2">
         <Zap className="w-5 h-5 text-amber-500" /> Velocidade de conversão
       </h3>
-      <p className="text-xs text-gray-500 mb-4">
-        Quanto tempo leva para um lead virar ativo, medido em dias.
-        <span className="ml-1 text-gray-400">P75 = 75% dos leads ativam até este número de dias.</span>
-      </p>
-      <div className="space-y-5">
+      <div className="mb-5 px-3 py-2.5 bg-gray-50 border border-gray-200 rounded-lg">
+        <p className="text-xs text-gray-700 leading-relaxed">
+          <strong className="text-gray-900">O que isso mostra:</strong> quanto tempo, em dias, um lead leva pra se tornar ativo.
+          Medimos dois momentos diferentes — quando o lead chega no CRM (cadastro) e quando ele apareceu na planilha de tráfego pago.
+          Quanto menor, mais rápido o time está convertendo.
+        </p>
+      </div>
+
+      <div className="space-y-6">
         {renderSecao(
           velocidade.cadastroAtivacao,
-          'Cadastro → Ativação',
-          'Desde a data de cadastro no CRM',
-          'bg-amber-50',
-          'border-amber-100',
+          '📋 Cadastro → Ativação',
+          'Conta a partir do dia que o motoboy aparece no CRM (via Playwright). Representa a velocidade geral do time de ativação, independente de onde o lead veio.',
+          'amber',
         )}
         {renderSecao(
           velocidade.tpLeadAtivacao,
-          'Lead TP → Ativação',
-          'Desde o dia em que apareceu na planilha TP',
-          'bg-blue-50',
-          'border-blue-100',
+          '🎯 Lead TP → Ativação',
+          'Conta a partir do dia que o lead chegou pela campanha de tráfego pago. Mostra quanto tempo a campanha leva pra converter em ativo.',
+          'blue',
         )}
       </div>
     </div>
