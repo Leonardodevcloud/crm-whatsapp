@@ -292,23 +292,76 @@ export async function POST(req: NextRequest) {
       } else if (stageLower === 'ativados') {
         resultado = await enriquecerComOperacao(leadsPorAtivacao.map(enriquecer));
       } else if (stageLower === 'alocados') {
-        // Alocações da tabela Supabase
-        const client = supabaseAdmin || supabase;
-        const { data: alocs } = await client
-          .from('crm_alocacoes')
-          .select('cod_profissional')
-          .gte('data_alocacao', dataInicioStr)
-          .lte('data_alocacao', dataFimStr + 'T23:59:59.999Z');
+        // Alocações vêm do backend Railway (MESMA fonte do analytics-route).
+        // Filtra por data_prevista (quando foi planejada a operação), com
+        // fallback pra created_at — consistente com o KPI "Alocados".
+        const alocHeaders: Record<string, string> = { 'Content-Type': 'application/json' };
+        if (CRM_SERVICE_KEY) alocHeaders['x-service-key'] = CRM_SERVICE_KEY;
 
-        const codsAlocados = new Set(
-          (alocs || []).map(a => String(a.cod_profissional)).filter(Boolean)
-        );
+        const alocResp = await fetch(`${BACKEND_URL}/api/crm/alocacao?limit=50000&todos=true`, {
+          headers: alocHeaders,
+          signal: AbortSignal.timeout(20_000),
+        }).then(r => r.ok ? r.json() : { success: false, data: [] }).catch(() => ({ success: false, data: [] }));
+
+        const todasAlocacoes: any[] = alocResp?.data || [];
+
+        // Filtrar alocações do período (data_prevista OU created_at dentro do range)
+        const alocacoesPeriodo = todasAlocacoes.filter((a: any) => {
+          const fonte = a.data_prevista || a.created_at;
+          if (!fonte) return false;
+          const d = String(fonte).split('T')[0];
+          return d >= dataInicioStr && d <= dataFimStr;
+        });
+
+        // Indexar alocações por cod_prof pra conseguir extrair quem_alocou/data_prevista
+        // ao montar a linha (dedup: mais recente vence)
+        const alocPorCod = new Map<string, any>();
+        for (const a of alocacoesPeriodo) {
+          const c = a.cod_prof ? String(a.cod_prof) : null;
+          if (!c) continue;
+          const atual = alocPorCod.get(c);
+          const fonteNova = a.data_prevista || a.created_at;
+          const fonteAtual = atual ? (atual.data_prevista || atual.created_at) : null;
+          if (!atual || (fonteNova && fonteAtual && fonteNova > fonteAtual)) {
+            alocPorCod.set(c, a);
+          }
+        }
+
+        const codsAlocados = Array.from(alocPorCod.keys());
         const indexLeads = new Map(todosLeads.map(l => [String(l.cod), l]));
-        const alocadosList = (Array.from(codsAlocados) as string[])
-          .map(cod => indexLeads.get(cod))
-          .filter(l => l && matchRegiao(l.regiao))
+
+        const alocadosList = codsAlocados
+          .map(cod => {
+            const lead = indexLeads.get(cod);
+            if (!lead) {
+              // Lead alocado mas não está em crm_leads_capturados
+              // Monta registro mínimo a partir da alocação
+              const a = alocPorCod.get(cod);
+              return {
+                cod: cod,
+                nome: a?.nome_prof || null,
+                telefone: null,
+                regiao: null,
+                celular: null,
+                data_cadastro: null,
+                data_ativacao: null,
+                status_api: null,
+                quem_ativou: null,
+                quem_alocou: a?.quem_alocou || null,
+              };
+            }
+            // Mescla com quem_alocou da alocação
+            const a = alocPorCod.get(cod);
+            return {
+              ...lead,
+              quem_alocou: a?.quem_alocou || lead.quem_alocou || null,
+            };
+          })
+          .filter(l => matchRegiao(l.regiao))
           .map(enriquecer);
+
         resultado = await enriquecerComOperacao(alocadosList);
+        console.log(`[drilldown] Alocados: total=${alocacoesPeriodo.length} codsUnicos=${codsAlocados.length} resultado=${resultado.length}`);
       } else if (stageLower.includes('em operação') || stageLower.includes('em operacao')) {
         // Em operação: cruza ativados com bi_entregas via endpoint
         resultado = await buscarEmOperacao(leadsPorAtivacao, dataInicioStr, dataFimStr);
