@@ -36,6 +36,7 @@ interface AnalyticsData {
   };
   velocidade?: {
     cadastroAtivacao: { media: number | null; mediana: number | null; p75: number | null; amostra: number };
+    tpLeadAtivacao:   { media: number | null; mediana: number | null; p75: number | null; amostra: number };
   };
   funil: Array<{ stage: string; quantidade: number; cor: string; base: number }>;
   funilTP: Array<{ stage: string; quantidade: number; cor: string; base: number }>;
@@ -680,70 +681,217 @@ function ChartDia({ porDia }: { porDia: DiaPoint[] }) {
   );
 }
 
-// ═══ Delta — badge de variação vs período anterior ═══
-function Delta({ atual, anterior, sufixoLabel }: { atual: number; anterior: number | undefined; sufixoLabel?: string }) {
-  if (anterior === undefined || anterior === null) return null;
-  // Quando ambos zero, não mostra badge (sem sinal)
-  if (atual === 0 && anterior === 0) return null;
-  // Quando anterior=0 e atual>0, variação = "+∞" tecnicamente. Simplificamos pra "novo"
-  if (anterior === 0) {
-    return (
-      <span className="inline-flex items-center gap-0.5 text-[11px] font-semibold text-emerald-600">
-        ↑ novo{sufixoLabel && <span className="text-gray-400 font-normal ml-1">{sufixoLabel}</span>}
-      </span>
-    );
-  }
-  const delta = ((atual - anterior) / anterior) * 100;
-  const abs = Math.abs(delta);
+// ═══ Helpers de comparativo ═══
+function calcularDelta(atual: number, anterior: number | undefined): { pct: number | null; label: string; cor: string; seta: string } {
+  if (anterior === undefined || anterior === null) return { pct: null, label: '—', cor: 'text-gray-400', seta: '' };
+  if (atual === 0 && anterior === 0) return { pct: 0, label: '0%', cor: 'text-gray-400', seta: '→' };
+  if (anterior === 0) return { pct: null, label: 'novo', cor: 'text-emerald-600', seta: '↑' };
+  const pct = ((atual - anterior) / anterior) * 100;
+  const abs = Math.abs(pct);
   const arredondado = abs < 10 ? abs.toFixed(1) : Math.round(abs).toString();
-  const positivo = delta > 0;
-  const neutro = delta === 0;
-  const cor = neutro ? 'text-gray-400' : positivo ? 'text-emerald-600' : 'text-red-500';
-  const seta = neutro ? '→' : positivo ? '↑' : '↓';
+  const positivo = pct > 0;
+  const neutro = pct === 0;
+  return {
+    pct,
+    label: `${arredondado}%`,
+    cor: neutro ? 'text-gray-400' : positivo ? 'text-emerald-600' : 'text-red-500',
+    seta: neutro ? '→' : positivo ? '↑' : '↓',
+  };
+}
+
+// Projeção: ritmo atual × dias do período
+// Se o filtro é o mês atual e estamos no dia 17, projetamos o total do mês.
+// Fórmula: atual × (totalDiasPeriodo / diasJaDecorridos)
+function calcularProjecao(atual: number, dataInicioStr: string, dataFimStr: string): { valor: number; diasTotal: number; diasDecorridos: number } | null {
+  const msDia = 86_400_000;
+  const inicio = new Date(dataInicioStr + 'T00:00:00');
+  const fim = new Date(dataFimStr + 'T23:59:59');
+  const hoje = new Date();
+  // Só projetar se o período inclui "hoje" (não faz sentido projetar passado)
+  if (hoje < inicio || hoje > fim) return null;
+  const diasTotal = Math.round((fim.getTime() - inicio.getTime()) / msDia) + 1;
+  const diasDecorridos = Math.max(1, Math.round((hoje.getTime() - inicio.getTime()) / msDia) + 1);
+  if (diasDecorridos >= diasTotal) return null; // período acabou, projeção = atual
+  const valor = Math.round(atual * (diasTotal / diasDecorridos));
+  return { valor, diasTotal, diasDecorridos };
+}
+
+// ═══ DeltaBotao — badge de variação + botão '+' que abre modal ═══
+function DeltaBotao({
+  atual,
+  anterior,
+  labelKpi,
+  corBase,
+  filtros,
+}: {
+  atual: number;
+  anterior: number | undefined;
+  labelKpi: string;
+  corBase: string; // ex: 'text-purple-600'
+  filtros: { dataInicio: string; dataFim: string; periodoAntInicio: string; periodoAntFim: string };
+}) {
+  const [modalOpen, setModalOpen] = useState(false);
+  const d = calcularDelta(atual, anterior);
+  const projecao = calcularProjecao(atual, filtros.dataInicio, filtros.dataFim);
+
+  if (anterior === undefined) return null; // sem dado anterior, nada exibir
+
+  const formatBR = (s: string) => s.split('-').reverse().join('/');
+
   return (
-    <span className={`inline-flex items-center gap-0.5 text-[11px] font-semibold ${cor}`} title={`Anterior: ${anterior.toLocaleString()}`}>
-      {seta} {arredondado}%{sufixoLabel && <span className="text-gray-400 font-normal ml-1">{sufixoLabel}</span>}
-    </span>
+    <>
+      <div className="inline-flex items-center gap-1">
+        <span className={`inline-flex items-center gap-0.5 text-[11px] font-semibold ${d.cor}`}>
+          {d.seta} {d.label}
+        </span>
+        <button
+          onClick={() => setModalOpen(true)}
+          className="w-4 h-4 inline-flex items-center justify-center rounded-full bg-gray-100 hover:bg-purple-100 text-gray-500 hover:text-purple-600 transition-colors"
+          title={`Comparar ${labelKpi} com período anterior`}
+        >
+          <Plus className="w-3 h-3" />
+        </button>
+      </div>
+
+      {modalOpen && (
+        <div
+          className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4"
+          onClick={() => setModalOpen(false)}
+        >
+          <div
+            className="bg-white rounded-2xl shadow-2xl max-w-lg w-full overflow-hidden"
+            onClick={e => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between px-6 py-4 border-b">
+              <div>
+                <h3 className="text-lg font-bold text-gray-800">Comparativo — {labelKpi}</h3>
+                <p className="text-xs text-gray-500">Atual vs período anterior + projeção</p>
+              </div>
+              <button onClick={() => setModalOpen(false)} className="w-8 h-8 rounded-full hover:bg-gray-100 flex items-center justify-center">
+                <X className="w-5 h-5 text-gray-500" />
+              </button>
+            </div>
+
+            <div className="p-6 space-y-4">
+              {/* Período atual */}
+              <div className="flex items-center justify-between p-4 bg-purple-50 border border-purple-100 rounded-xl">
+                <div>
+                  <p className="text-xs text-purple-700 uppercase tracking-wide font-semibold">Período atual</p>
+                  <p className="text-xs text-gray-500 mt-0.5">{formatBR(filtros.dataInicio)} → {formatBR(filtros.dataFim)}</p>
+                </div>
+                <p className={`text-3xl font-bold ${corBase}`}>{atual.toLocaleString()}</p>
+              </div>
+
+              {/* Período anterior */}
+              <div className="flex items-center justify-between p-4 bg-gray-50 border border-gray-200 rounded-xl">
+                <div>
+                  <p className="text-xs text-gray-600 uppercase tracking-wide font-semibold">Período anterior</p>
+                  <p className="text-xs text-gray-500 mt-0.5">{formatBR(filtros.periodoAntInicio)} → {formatBR(filtros.periodoAntFim)}</p>
+                </div>
+                <p className="text-3xl font-bold text-gray-700">{(anterior ?? 0).toLocaleString()}</p>
+              </div>
+
+              {/* Variação */}
+              <div className={`flex items-center justify-between p-4 border rounded-xl ${d.cor.replace('text-', 'border-').replace('-600', '-200').replace('-500', '-200').replace('-400', '-200')}`}>
+                <div>
+                  <p className="text-xs text-gray-600 uppercase tracking-wide font-semibold">Variação</p>
+                  <p className="text-xs text-gray-500 mt-0.5">Diferença absoluta: {(atual - (anterior ?? 0)).toLocaleString()}</p>
+                </div>
+                <p className={`text-3xl font-bold ${d.cor}`}>
+                  {d.seta} {d.label}
+                </p>
+              </div>
+
+              {/* Projeção */}
+              {projecao ? (
+                <div className="flex items-center justify-between p-4 bg-amber-50 border border-amber-200 rounded-xl">
+                  <div>
+                    <p className="text-xs text-amber-700 uppercase tracking-wide font-semibold">Projeção fim do período</p>
+                    <p className="text-xs text-gray-500 mt-0.5">
+                      Ritmo de {Math.round(atual / projecao.diasDecorridos * 10) / 10}/dia × {projecao.diasTotal} dias
+                    </p>
+                  </div>
+                  <p className="text-3xl font-bold text-amber-600">{projecao.valor.toLocaleString()}</p>
+                </div>
+              ) : (
+                <div className="p-4 bg-gray-50 border border-gray-200 rounded-xl text-center text-xs text-gray-500">
+                  Projeção disponível apenas quando o período inclui o dia atual
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+    </>
   );
 }
 
-// ═══ Card Velocidade de conversão (Cadastro → Ativação) ═══
+// ═══ CardVelocidade — 2 seções: Cadastro→Ativação e Lead TP→Ativação ═══
 function CardVelocidade({
   velocidade,
 }: {
   velocidade: NonNullable<AnalyticsData['velocidade']>;
 }) {
-  const v = velocidade.cadastroAtivacao;
-  const semDados = !v || v.amostra === 0;
+  const renderSecao = (v: { media: number | null; mediana: number | null; p75: number | null; amostra: number }, titulo: string, subtitulo: string, corBase: string, corBorda: string) => {
+    const semDados = !v || v.amostra === 0;
+    return (
+      <div>
+        <div className="flex items-center justify-between mb-2">
+          <div>
+            <h4 className="text-sm font-semibold text-gray-700">{titulo}</h4>
+            <p className="text-[11px] text-gray-500">{subtitulo} {v?.amostra ? <span className="text-gray-400">· {v.amostra} leads</span> : null}</p>
+          </div>
+        </div>
+        {semDados ? (
+          <p className="text-sm text-gray-400 text-center py-6 border rounded-xl bg-gray-50">Sem dados no período</p>
+        ) : (
+          <div className="grid grid-cols-3 gap-3">
+            <div className={`${corBase} border ${corBorda} rounded-xl p-4 text-center`}>
+              <p className={`text-3xl font-bold ${corBase.includes('amber') ? 'text-amber-600' : 'text-blue-600'}`}>{v.mediana}</p>
+              <p className="text-[11px] text-gray-500 mt-0.5 uppercase tracking-wide">Mediana</p>
+              <p className="text-[10px] text-gray-400 mt-1">metade ativa até este dia</p>
+            </div>
+            <div className="bg-white border rounded-xl p-4 text-center">
+              <p className="text-3xl font-bold text-gray-700">{v.media?.toFixed(1)}</p>
+              <p className="text-[11px] text-gray-500 mt-0.5 uppercase tracking-wide">Média</p>
+              <p className="text-[10px] text-gray-400 mt-1">sensível a outliers</p>
+            </div>
+            <div className="bg-white border rounded-xl p-4 text-center">
+              <p className="text-3xl font-bold text-gray-700">{v.p75}</p>
+              <p className="text-[11px] text-gray-500 mt-0.5 uppercase tracking-wide" title="75% dos leads ativam até este número de dias">P75</p>
+              <p className="text-[10px] text-gray-400 mt-1">75% ativam até este dia</p>
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  };
+
   return (
     <div className="card p-5">
       <h3 className="text-lg font-bold text-gray-800 flex items-center gap-2 mb-1">
         <Zap className="w-5 h-5 text-amber-500" /> Velocidade de conversão
       </h3>
       <p className="text-xs text-gray-500 mb-4">
-        Dias entre cadastro e ativação {v?.amostra ? <span className="text-gray-400">· {v.amostra} leads analisados</span> : null}
+        Quanto tempo leva para um lead virar ativo, medido em dias.
+        <span className="ml-1 text-gray-400">P75 = 75% dos leads ativam até este número de dias.</span>
       </p>
-      {semDados ? (
-        <p className="text-sm text-gray-400 text-center py-6">Nenhum lead ativado no período</p>
-      ) : (
-        <div className="grid grid-cols-3 gap-3">
-          <div className="bg-amber-50 border border-amber-100 rounded-xl p-4 text-center">
-            <p className="text-3xl font-bold text-amber-600">{v.mediana}</p>
-            <p className="text-[11px] text-gray-500 mt-0.5 uppercase tracking-wide">Mediana</p>
-            <p className="text-[10px] text-gray-400 mt-1">metade ativa até este dia</p>
-          </div>
-          <div className="bg-white border rounded-xl p-4 text-center">
-            <p className="text-3xl font-bold text-gray-700">{v.media?.toFixed(1)}</p>
-            <p className="text-[11px] text-gray-500 mt-0.5 uppercase tracking-wide">Média</p>
-            <p className="text-[10px] text-gray-400 mt-1">sensível a outliers</p>
-          </div>
-          <div className="bg-white border rounded-xl p-4 text-center">
-            <p className="text-3xl font-bold text-gray-700">{v.p75}</p>
-            <p className="text-[11px] text-gray-500 mt-0.5 uppercase tracking-wide">P75</p>
-            <p className="text-[10px] text-gray-400 mt-1">75% ativam até este dia</p>
-          </div>
-        </div>
-      )}
+      <div className="space-y-5">
+        {renderSecao(
+          velocidade.cadastroAtivacao,
+          'Cadastro → Ativação',
+          'Desde a data de cadastro no CRM',
+          'bg-amber-50',
+          'border-amber-100',
+        )}
+        {renderSecao(
+          velocidade.tpLeadAtivacao,
+          'Lead TP → Ativação',
+          'Desde o dia em que apareceu na planilha TP',
+          'bg-blue-50',
+          'border-blue-100',
+        )}
+      </div>
     </div>
   );
 }
@@ -809,7 +957,15 @@ function AnalyticsContent() {
             <div className="min-w-0">
               <div className="flex items-center gap-2 flex-wrap">
                 <p className="text-3xl font-bold text-purple-600">{kpis.totalCadastros.toLocaleString()}</p>
-                <Delta atual={kpis.totalCadastros} anterior={periodoAnterior?.totalCadastros} />
+                {periodoAnterior && (
+                  <DeltaBotao
+                    atual={kpis.totalCadastros}
+                    anterior={periodoAnterior.totalCadastros}
+                    labelKpi="Total Cadastros"
+                    corBase="text-purple-600"
+                    filtros={{ dataInicio, dataFim, periodoAntInicio: periodoAnterior.dataInicio, periodoAntFim: periodoAnterior.dataFim }}
+                  />
+                )}
               </div>
               <p className="text-xs text-gray-500">Total Cadastros</p>
               <p className="text-xs text-gray-400 mt-0.5">Não ativados: {kpis.naoAtivados}</p>
@@ -824,7 +980,15 @@ function AnalyticsContent() {
             <div className="min-w-0">
               <div className="flex items-center gap-2 flex-wrap">
                 <p className="text-3xl font-bold text-green-600">{kpis.totalAtivos.toLocaleString()}</p>
-                <Delta atual={kpis.totalAtivos} anterior={periodoAnterior?.totalAtivos} />
+                {periodoAnterior && (
+                  <DeltaBotao
+                    atual={kpis.totalAtivos}
+                    anterior={periodoAnterior.totalAtivos}
+                    labelKpi="Ativados"
+                    corBase="text-green-600"
+                    filtros={{ dataInicio, dataFim, periodoAntInicio: periodoAnterior.dataInicio, periodoAntFim: periodoAnterior.dataFim }}
+                  />
+                )}
               </div>
               <p className="text-xs text-gray-500">Ativados</p>
               <p className="text-xs text-green-500 mt-0.5">{kpis.taxaConversao}% conversão</p>
@@ -839,7 +1003,15 @@ function AnalyticsContent() {
             <div className="min-w-0">
               <div className="flex items-center gap-2 flex-wrap">
                 <p className="text-3xl font-bold text-violet-600">{kpis.totalAlocados?.toLocaleString() || 0}</p>
-                <Delta atual={kpis.totalAlocados || 0} anterior={periodoAnterior?.totalAlocados} />
+                {periodoAnterior && (
+                  <DeltaBotao
+                    atual={kpis.totalAlocados || 0}
+                    anterior={periodoAnterior.totalAlocados}
+                    labelKpi="Alocados"
+                    corBase="text-violet-600"
+                    filtros={{ dataInicio, dataFim, periodoAntInicio: periodoAnterior.dataInicio, periodoAntFim: periodoAnterior.dataFim }}
+                  />
+                )}
               </div>
               <p className="text-xs text-gray-500">Alocados</p>
             </div>
@@ -853,7 +1025,15 @@ function AnalyticsContent() {
             <div className="min-w-0">
               <div className="flex items-center gap-2 flex-wrap">
                 <p className="text-3xl font-bold text-blue-600">{kpis.emOperacao}</p>
-                <Delta atual={kpis.emOperacao} anterior={periodoAnterior?.emOperacao} />
+                {periodoAnterior && (
+                  <DeltaBotao
+                    atual={kpis.emOperacao}
+                    anterior={periodoAnterior.emOperacao}
+                    labelKpi="Em Operação"
+                    corBase="text-blue-600"
+                    filtros={{ dataInicio, dataFim, periodoAntInicio: periodoAnterior.dataInicio, periodoAntFim: periodoAnterior.dataFim }}
+                  />
+                )}
               </div>
               <p className="text-xs text-gray-500">Em Operação</p>
               <p className="text-xs text-blue-500 mt-0.5">{kpis.taxaOperacao}% taxa real</p>
