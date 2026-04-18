@@ -27,7 +27,23 @@ export async function GET(req: NextRequest) {
     const dataLimiteInicio = new Date(dataInicioStr + 'T00:00:00');
     const dataLimiteFim = new Date(dataFimStr + 'T23:59:59');
 
+    // === Período anterior (mesma duração, deslocado pra trás) ===
+    // Ex: filtro 01/04 → 30/04 (30 dias) → anterior = 02/03 → 31/03
+    // A duração é calculada em dias exatos.
+    const msDia = 24 * 60 * 60 * 1000;
+    const duracaoDias = Math.max(1, Math.round((dataLimiteFim.getTime() - dataLimiteInicio.getTime()) / msDia) + 1);
+    const dataAntFim = new Date(dataLimiteInicio.getTime() - msDia); // dia anterior ao início
+    const dataAntInicio = new Date(dataAntFim.getTime() - (duracaoDias - 1) * msDia);
+    const dataAntInicioStr = dataAntInicio.toISOString().slice(0, 10);
+    const dataAntFimStr = dataAntFim.toISOString().slice(0, 10);
+    const dentroDoPeriodoAnt = (d: string | null | undefined): boolean => {
+      if (!d) return false;
+      const dia = String(d).split('T')[0];
+      return dia >= dataAntInicioStr && dia <= dataAntFimStr;
+    };
+
     console.log(`[Analytics] Filtros: ${dataInicioStr} → ${dataFimStr} | regiao=${regiao || 'todas'}`);
+    console.log(`[Analytics] Período anterior (${duracaoDias}d): ${dataAntInicioStr} → ${dataAntFimStr}`);
 
     // ═══ 1. DADOS BACKEND — buscar TODOS, filtrar localmente ═══
     // Precisamos de 2 filtros diferentes:
@@ -67,6 +83,39 @@ export async function GET(req: NextRequest) {
     const totalInativos = leadsPorCadastro.filter((l: any) => l.status_api === 'inativo').length;
 
     console.log(`[Analytics] ${dataInicioStr}→${dataFimStr} | Total todos: ${todosLeads.length} | Cadastros período: ${totalCadastros} | Ativados período: ${totalAtivos}`);
+
+    // ─── Período anterior (cadastros + ativados) ───
+    // Também respeita o filtro de região (se houver) — o /api/crm/leads-captura
+    // já veio com filtro de região aplicado, então só filtrar por data.
+    const leadsPorCadastroAnt = todosLeads.filter((l: any) => dentroDoPeriodoAnt(l.data_cadastro));
+    const leadsPorAtivacaoAnt = todosLeads.filter((l: any) =>
+      l.status_api === 'ativo' && dentroDoPeriodoAnt(l.data_ativacao)
+    );
+    const totalCadastrosAnt = leadsPorCadastroAnt.length;
+    const totalAtivosAnt = leadsPorAtivacaoAnt.length;
+
+    // ─── Time-to-X: velocidade de conversão ───
+    // Para cada lead cadastrado no período que também foi ativado:
+    //   dias entre cadastro e ativação.
+    // Guardamos todos os deltas pra calcular média, mediana e P75.
+    const deltasCadAtiv: number[] = [];
+    for (const l of leadsPorCadastro) {
+      if (!l.data_ativacao) continue;
+      const tCad = new Date(l.data_cadastro).getTime();
+      const tAtv = new Date(l.data_ativacao).getTime();
+      if (isNaN(tCad) || isNaN(tAtv)) continue;
+      const dias = Math.round((tAtv - tCad) / msDia);
+      if (dias >= 0 && dias <= 365) deltasCadAtiv.push(dias);
+    }
+    const estatDias = (arr: number[]) => {
+      if (arr.length === 0) return { media: null as number | null, mediana: null as number | null, p75: null as number | null, amostra: 0 };
+      const sorted = [...arr].sort((a, b) => a - b);
+      const media = arr.reduce((s, n) => s + n, 0) / arr.length;
+      const mediana = sorted[Math.floor(sorted.length / 2)];
+      const p75 = sorted[Math.floor(sorted.length * 0.75)];
+      return { media: Math.round(media * 10) / 10, mediana, p75, amostra: arr.length };
+    };
+    const velocidadeCadAtiv = estatDias(deltasCadAtiv);
 
     // Set de códigos ativos no período (para cruzar com TP e BI)
     const codsAtivosSet = new Set(leadsPorAtivacao.map((l: any) => String(l.cod)));
@@ -512,11 +561,13 @@ export async function GET(req: NextRequest) {
 
     // ═══ 3. BI ═══ (agora passa data_inicio/data_fim pra respeitar filtro do período)
     let emOperacao = 0;
+    let emOperacaoAnt = 0;
     let tpEmOperacao = 0;
     let tpEmOperacao90d = 0; // versão "últimos 3 meses" (janela fixa 90d)
     let codsEmOperacaoSet = new Set<string>();
     try {
       const codigosAtivos = leadsPorAtivacao.map((l: any) => String(l.cod)).filter(Boolean);
+      const codigosAtivosAnt = leadsPorAtivacaoAnt.map((l: any) => String(l.cod)).filter(Boolean);
       // Códigos dos TP Ativados em AMBAS as versões (pra medir operação)
       const codsTPAtivosAtuais = funilAtual.ativadosItens.map(i => i.cod_profissional).filter(Boolean);
       const codsTPAtivos90d    = funil90d.ativadosItens.map(i => i.cod_profissional).filter(Boolean);
@@ -562,6 +613,20 @@ export async function GET(req: NextRequest) {
           tpEmOperacao90d = Array.from(setTP90).filter((c: string) => setOp90.has(c)).length;
         }
       }
+
+      // Em Operação — PERÍODO ANTERIOR (pra delta vs KPI principal)
+      if (codigosAtivosAnt.length > 0) {
+        const biAnt = await fetch(`${BI_API_URL}/api/crm/verificar-operacao`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...(CRM_SERVICE_KEY ? { 'x-service-key': CRM_SERVICE_KEY } : {}) },
+          body: JSON.stringify({ codigos: codigosAtivosAnt, data_inicio: dataAntInicioStr, data_fim: dataAntFimStr }),
+        }).then(r => r.json()).catch(() => null);
+        if (biAnt?.resultado) {
+          const setOpAnt = new Set<string>(biAnt.resultado.filter((r: any) => r.em_operacao).map((r: any) => String(r.cod_profissional)));
+          const setAtivAnt = new Set<string>(codigosAtivosAnt);
+          emOperacaoAnt = Array.from(setOpAnt).filter((c: string) => setAtivAnt.has(c)).length;
+        }
+      }
     } catch (err: any) { console.error('[Analytics] Erro BI:', err.message); }
 
     // ═══ 4. ALOCAÇÕES (mesmo período) ═══
@@ -569,6 +634,7 @@ export async function GET(req: NextRequest) {
     // importadas da Google Sheet — o KPI só contava alocações criadas pela UI.
     // Agora conta TODAS (manuais + importadas) para bater com a realidade.
     let totalAlocados = 0;
+    let totalAlocadosAnt = 0;
     let alocacoesPorOperador: Record<string, number> = {};
     const alocacoesPorDia: Record<string, number> = {};
     // Pré-zerar todas as chaves de dia do período (mesma janela de cadastros/ativados)
@@ -590,6 +656,13 @@ export async function GET(req: NextRequest) {
         if (d < dataInicioStr || d > dataFimStr) return false;
         return true;
       });
+
+      // Período ANTERIOR — mesma regra de data_prevista + fallback
+      const alocacoesAnt = todasAlocacoes.filter((a: any) => {
+        const fonte = a.data_prevista || a.created_at;
+        return dentroDoPeriodoAnt(fonte);
+      });
+      totalAlocadosAnt = alocacoesAnt.length;
 
       totalAlocados = alocacoesPeriodo.length;
 
@@ -621,6 +694,25 @@ export async function GET(req: NextRequest) {
       success: true,
       data: {
         kpis: { totalCadastros, totalAtivos, totalAlocados, totalInativos, naoAtivados, emOperacao, naoOperando: totalAtivos - emOperacao, taxaConversao, taxaOperacao },
+
+        // Período anterior (mesma duração, deslocado pra trás) — pra calcular
+        // variação de cada KPI. O frontend calcula %Δ localmente.
+        periodoAnterior: {
+          dataInicio: dataAntInicioStr,
+          dataFim: dataAntFimStr,
+          duracaoDias,
+          totalCadastros: totalCadastrosAnt,
+          totalAtivos: totalAtivosAnt,
+          totalAlocados: totalAlocadosAnt,
+          emOperacao: emOperacaoAnt,
+        },
+
+        // Time-to-X — velocidade de conversão. Só cadastro→ativação por enquanto
+        // (ativação→alocação exigiria join com crm_alocacoes no frontend;
+        // ativação→primeira entrega exigiria mais queries ao backend).
+        velocidade: {
+          cadastroAtivacao: velocidadeCadAtiv, // { media, mediana, p75, amostra }
+        },
         funil: [
           // FIX: todas as etapas agora são comparadas contra Total Cadastros
           // (antes: Alocados/Em Operação comparavam contra Ativados, dando %
