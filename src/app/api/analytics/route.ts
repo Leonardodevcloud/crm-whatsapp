@@ -559,8 +559,13 @@ export async function GET(req: NextRequest) {
     // ─── Velocidade TP (data_lead_tp → data_ativacao) ───
     // Para cada lead da planilha TP que tem match com cadastro E tem data_ativacao:
     //   se data_ativacao está no período atual, conta o delta em dias.
-    // Isso mostra quanto tempo um lead TP leva pra virar ativo depois de chegar.
-    const deltasTpAtiv: number[] = [];
+    //
+    // IMPORTANTE: um mesmo motoboy pode aparecer várias vezes na planilha
+    // (lead em múltiplas campanhas). Deduplicamos por cod_profissional pegando
+    // a data_lead MAIS RECENTE (última aparição antes da ativação) — isso
+    // representa fielmente "em quantos dias o lead mais recente converteu".
+    // Sem deduplicação, a amostra ficaria inflada (ex.: 80 em vez de 52).
+    const deltaPorCod = new Map<string, number>(); // cod → dias
     for (const linha of linhasPlanilhaTP) {
       if (!linha.dataISO) continue;
       // achar match no índice de cadastros
@@ -583,8 +588,14 @@ export async function GET(req: NextRequest) {
       const tAtv = new Date(cad.data_ativacao).getTime();
       if (isNaN(tLead) || isNaN(tAtv)) continue;
       const dias = Math.round((tAtv - tLead) / msDia);
-      if (dias >= 0 && dias <= 365) deltasTpAtiv.push(dias);
+      if (dias < 0 || dias > 365) continue;
+      // Se já tem entrada pra esse cod, mantém a MENOR distância (lead TP mais recente)
+      const anterior = deltaPorCod.get(cad.cod);
+      if (anterior === undefined || dias < anterior) {
+        deltaPorCod.set(cad.cod, dias);
+      }
     }
+    const deltasTpAtiv = Array.from(deltaPorCod.values());
     const velocidadeTpAtiv = estatDias(deltasTpAtiv);
     console.log(`[Analytics] Velocidade: cad→atv amostra=${velocidadeCadAtiv.amostra} mediana=${velocidadeCadAtiv.mediana} | tp→atv amostra=${velocidadeTpAtiv.amostra} mediana=${velocidadeTpAtiv.mediana}`);
 
