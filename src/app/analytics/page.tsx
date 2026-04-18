@@ -847,9 +847,6 @@ function CardVelocidade({
         <div className="mb-3">
           <h4 className="text-base font-bold text-gray-800">{titulo}</h4>
           <p className="text-xs text-gray-600 mt-0.5">{explicacao}</p>
-          {v?.amostra ? (
-            <p className="text-[11px] text-gray-400 mt-0.5">Baseado em {v.amostra} leads ativados no período</p>
-          ) : null}
         </div>
 
         {semDados ? (
