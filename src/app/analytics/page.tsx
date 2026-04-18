@@ -1399,9 +1399,6 @@ function AnalyticsContent() {
       {/* Velocidade de conversão (Cadastro → Ativação) */}
       {velocidade && <CardVelocidade velocidade={velocidade} />}
 
-      {/* Retenção de ativados (ativados no período anterior que rodaram no atual) */}
-      {retencao && <CardRetencao retencao={retencao} />}
-
       {/* Qualidade por Operador */}
       {qualidadePorOperador && qualidadePorOperador.length > 0 && (
         <CardQualidadeOperador itens={qualidadePorOperador} />
