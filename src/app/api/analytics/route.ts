@@ -599,6 +599,16 @@ export async function GET(req: NextRequest) {
     const velocidadeTpAtiv = estatDias(deltasTpAtiv);
     console.log(`[Analytics] Velocidade: cad→atv amostra=${velocidadeCadAtiv.amostra} mediana=${velocidadeCadAtiv.mediana} | tp→atv amostra=${velocidadeTpAtiv.amostra} mediana=${velocidadeTpAtiv.mediana}`);
 
+    // ─── Funil de Conversão — VERSÃO 90 DIAS (janela fixa hoje-90d..hoje) ───
+    // Igual ao TP: usa mesmos leads, só aplica filtro de data diferente.
+    // IGNORA região (mostra panorama geral).
+    const leadsPorCadastro90d = todosLeads.filter((l: any) => dentroDe90d(l.data_cadastro));
+    const leadsPorAtivacao90d = todosLeads.filter((l: any) =>
+      l.status_api === 'ativo' && dentroDe90d(l.data_ativacao)
+    );
+    const totalCadastros90d = leadsPorCadastro90d.length;
+    const totalAtivos90d = leadsPorAtivacao90d.length;
+
     // Mortos/ressuscitados removidos do analytics conforme solicitação
     // (conceitos seguem existindo no kanban, cron de enriquecimento e types)
 
@@ -609,12 +619,14 @@ export async function GET(req: NextRequest) {
     // ═══ 3. BI ═══ (agora passa data_inicio/data_fim pra respeitar filtro do período)
     let emOperacao = 0;
     let emOperacaoAnt = 0;
+    let emOperacao90d = 0; // funil de conversão — versão 90 dias
     let tpEmOperacao = 0;
     let tpEmOperacao90d = 0; // versão "últimos 3 meses" (janela fixa 90d)
     let codsEmOperacaoSet = new Set<string>();
     try {
       const codigosAtivos = leadsPorAtivacao.map((l: any) => String(l.cod)).filter(Boolean);
       const codigosAtivosAnt = leadsPorAtivacaoAnt.map((l: any) => String(l.cod)).filter(Boolean);
+      const codigosAtivos90d = leadsPorAtivacao90d.map((l: any) => String(l.cod)).filter(Boolean);
       // Códigos dos TP Ativados em AMBAS as versões (pra medir operação)
       const codsTPAtivosAtuais = funilAtual.ativadosItens.map(i => i.cod_profissional).filter(Boolean);
       const codsTPAtivos90d    = funil90d.ativadosItens.map(i => i.cod_profissional).filter(Boolean);
@@ -674,6 +686,20 @@ export async function GET(req: NextRequest) {
           emOperacaoAnt = Array.from(setOpAnt).filter((c: string) => setAtivAnt.has(c)).length;
         }
       }
+
+      // Em Operação — FUNIL CONVERSÃO VERSÃO 90 DIAS (pra toggle do funil)
+      if (codigosAtivos90d.length > 0) {
+        const biConv90 = await fetch(`${BI_API_URL}/api/crm/verificar-operacao`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...(CRM_SERVICE_KEY ? { 'x-service-key': CRM_SERVICE_KEY } : {}) },
+          body: JSON.stringify({ codigos: codigosAtivos90d, data_inicio: dataInicio90, data_fim: dataFim90 }),
+        }).then(r => r.json()).catch(() => null);
+        if (biConv90?.resultado) {
+          const setOpConv90 = new Set<string>(biConv90.resultado.filter((r: any) => r.em_operacao).map((r: any) => String(r.cod_profissional)));
+          const setAtivConv90 = new Set<string>(codigosAtivos90d);
+          emOperacao90d = Array.from(setOpConv90).filter((c: string) => setAtivConv90.has(c)).length;
+        }
+      }
     } catch (err: any) { console.error('[Analytics] Erro BI:', err.message); }
 
     // ═══ 4. ALOCAÇÕES (mesmo período) ═══
@@ -682,6 +708,7 @@ export async function GET(req: NextRequest) {
     // Agora conta TODAS (manuais + importadas) para bater com a realidade.
     let totalAlocados = 0;
     let totalAlocadosAnt = 0;
+    let totalAlocados90d = 0;
     let alocacoesPorOperador: Record<string, number> = {};
     const alocacoesPorDia: Record<string, number> = {};
     // Pré-zerar todas as chaves de dia do período (mesma janela de cadastros/ativados)
@@ -710,6 +737,13 @@ export async function GET(req: NextRequest) {
         return dentroDoPeriodoAnt(fonte);
       });
       totalAlocadosAnt = alocacoesAnt.length;
+
+      // Últimos 90 dias — pro funil "Últimos 3 meses"
+      const alocacoes90d = todasAlocacoes.filter((a: any) => {
+        const fonte = a.data_prevista || a.created_at;
+        return dentroDe90d(fonte);
+      });
+      totalAlocados90d = alocacoes90d.length;
 
       totalAlocados = alocacoesPeriodo.length;
 
@@ -769,6 +803,13 @@ export async function GET(req: NextRequest) {
           { stage: 'Ativados', quantidade: totalAtivos, cor: '#22C55E', base: totalCadastros },
           { stage: 'Alocados', quantidade: totalAlocados, cor: '#8B5CF6', base: totalCadastros },
           { stage: 'Em Operação', quantidade: emOperacao, cor: '#3B82F6', base: totalCadastros },
+        ],
+        // Funil de Conversão — VERSÃO 90 DIAS (ignora filtro de data e região)
+        funil90d: [
+          { stage: 'Total Cadastros', quantidade: totalCadastros90d, cor: '#6366F1', base: totalCadastros90d || 1 },
+          { stage: 'Ativados',        quantidade: totalAtivos90d,    cor: '#22C55E', base: totalCadastros90d || 1 },
+          { stage: 'Alocados',        quantidade: totalAlocados90d,  cor: '#8B5CF6', base: totalCadastros90d || 1 },
+          { stage: 'Em Operação',     quantidade: emOperacao90d,      cor: '#3B82F6', base: totalCadastros90d || 1 },
         ],
         funilTP: [
           // Todas as etapas usam o topo (Leads com Tag TP) como base,
