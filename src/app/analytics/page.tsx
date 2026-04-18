@@ -60,6 +60,7 @@ interface AnalyticsData {
   funilTP90dMeta?: { dataInicio: string; dataFim: string; janela: string };
   conversaoOperacao: { leadsAtivados: number; emOperacao: number; naoOperando: number; taxaReal: number };
   porRegiao: Array<{ regiao: string; quantidade: number }>;
+  cadastrosPorRegiao?: Array<{ regiao: string; quantidade: number }>;
   naoAtivadosPorRegiao: Array<{ regiao: string; quantidade: number }>;
   tpPorRegiao: Array<{ regiao: string; quantidade: number }>;
   porOperador: Array<{ operador: string; quantidade: number }>;
@@ -516,6 +517,74 @@ function RegionBars({ items, colors }: { items: Array<{ regiao: string; quantida
         );
       })}
       {items.length === 0 && <p className="text-gray-400 text-center py-8">Sem dados no período</p>}
+    </div>
+  );
+}
+
+// ═══ CardRegiaoComToggle — toggle entre "Ativados" e "Cadastros" por região ═══
+function CardRegiaoComToggle({
+  ativadosPorRegiao,
+  cadastrosPorRegiao,
+  colors,
+}: {
+  ativadosPorRegiao: Array<{ regiao: string; quantidade: number }>;
+  cadastrosPorRegiao?: Array<{ regiao: string; quantidade: number }>;
+  colors: string[];
+}) {
+  const [modo, setModo] = useState<'ativados' | 'cadastros'>('ativados');
+
+  const itens = modo === 'ativados' ? ativadosPorRegiao : (cadastrosPorRegiao || []);
+  const total = itens.reduce((s, r) => s + r.quantidade, 0);
+
+  const config = {
+    ativados: {
+      label: 'Ativados por Região',
+      iconColor: 'text-green-600',
+      badgeBg: 'bg-green-100',
+      badgeText: 'text-green-700',
+    },
+    cadastros: {
+      label: 'Cadastros por Região',
+      iconColor: 'text-purple-600',
+      badgeBg: 'bg-purple-100',
+      badgeText: 'text-purple-700',
+    },
+  } as const;
+  const cfg = config[modo];
+
+  return (
+    <div className="card p-5">
+      <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
+        <h3 className="text-lg font-bold text-gray-800 flex items-center gap-2">
+          <MapPin className={`w-5 h-5 ${cfg.iconColor}`} />
+          {cfg.label}
+          <span className={`text-xs ${cfg.badgeBg} ${cfg.badgeText} px-2 py-0.5 rounded-full`}>
+            {total.toLocaleString()} total
+          </span>
+        </h3>
+        {/* Toggle */}
+        <div className="inline-flex bg-gray-100 rounded-lg p-1 text-xs font-medium">
+          <button
+            onClick={() => setModo('ativados')}
+            className={`px-3 py-1.5 rounded-md transition-colors ${
+              modo === 'ativados' ? 'bg-white text-green-700 shadow-sm' : 'text-gray-600 hover:text-gray-800'
+            }`}
+          >
+            Ativados
+          </button>
+          <button
+            onClick={() => setModo('cadastros')}
+            disabled={!cadastrosPorRegiao}
+            className={`px-3 py-1.5 rounded-md transition-colors ${
+              modo === 'cadastros' ? 'bg-white text-purple-700 shadow-sm' : 'text-gray-600 hover:text-gray-800'
+            } ${!cadastrosPorRegiao ? 'opacity-40 cursor-not-allowed' : ''}`}
+            title={!cadastrosPorRegiao ? 'Não disponível' : undefined}
+          >
+            Cadastros
+          </button>
+        </div>
+      </div>
+      <RegionBars items={itens} colors={colors} />
     </div>
   );
 }
@@ -1269,7 +1338,7 @@ function AnalyticsContent() {
   if (error) return <div className="p-6 bg-red-50 rounded-lg text-red-700 flex items-center gap-2"><AlertCircle className="w-5 h-5" /> {error}</div>;
   if (!data) return null;
 
-  const { kpis, periodoAnterior, velocidade, qualidadePorOperador, retencao, funil, funil90d, funilTP, funilTP90d, funilTP90dMeta, conversaoOperacao, porRegiao, naoAtivadosPorRegiao, tpPorRegiao, porOperador, porOperadorAlocacao, porDia } = data;
+  const { kpis, periodoAnterior, velocidade, qualidadePorOperador, retencao, funil, funil90d, funilTP, funilTP90d, funilTP90dMeta, conversaoOperacao, porRegiao, cadastrosPorRegiao, naoAtivadosPorRegiao, tpPorRegiao, porOperador, porOperadorAlocacao, porDia } = data;
 
   return (
     <div className="p-4 md:p-6 max-w-[1600px] mx-auto space-y-6">
@@ -1429,7 +1498,7 @@ function AnalyticsContent() {
 
       {/* Regiões */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <div className="card p-5"><h3 className="text-lg font-bold text-gray-800 flex items-center gap-2 mb-4"><MapPin className="w-5 h-5 text-green-600" /> Ativados por Região <span className="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded-full">{porRegiao.reduce((s, r) => s + r.quantidade, 0)} total</span></h3><RegionBars items={porRegiao} colors={COLORS} /></div>
+        <CardRegiaoComToggle ativadosPorRegiao={porRegiao} cadastrosPorRegiao={cadastrosPorRegiao} colors={COLORS} />
         <div className="card p-5"><h3 className="text-lg font-bold text-gray-800 flex items-center gap-2 mb-4"><Tag className="w-5 h-5 text-purple-600" /> TP por Região <span className="text-xs bg-purple-100 text-purple-700 px-2 py-0.5 rounded-full">{tpPorRegiao.reduce((s, r) => s + r.quantidade, 0)} total</span></h3><RegionBars items={tpPorRegiao} colors={COLORS} /></div>
       </div>
 
