@@ -1,7 +1,7 @@
 // ===========================================
 // API: /api/leads
 // GET: Lista leads para Kanban
-// A verificação de status acontece em background (não bloqueia)
+// v3 - Adaptado para tatiane_followups + resumo de tatiane_resumos
 // ===========================================
 
 import { NextRequest, NextResponse } from 'next/server';
@@ -9,7 +9,6 @@ import { getUserFromHeader } from '@/lib/auth';
 import { getKanbanLeads, updateLead } from '@/lib/supabase';
 import { verificarStatusProfissional, determinarNovoStage } from '@/lib/tutts-api';
 
-// Função para verificar leads em background (não aguarda)
 async function verificarLeadsBackground(leads: any[]) {
   const leadsParaVerificar = leads.filter(
     lead => lead.stage !== 'finalizado' && lead.telefone
@@ -41,7 +40,6 @@ async function verificarLeadsBackground(leads: any[]) {
 }
 
 export async function GET(req: NextRequest) {
-  // Verificar autenticação
   const authHeader = req.headers.get('authorization');
   const user = getUserFromHeader(authHeader);
 
@@ -53,20 +51,16 @@ export async function GET(req: NextRequest) {
   }
 
   try {
-    // Extrair filtros da query string
     const { searchParams } = new URL(req.url);
     const regiao = searchParams.get('regiao') || undefined;
     const iniciado_por = searchParams.get('iniciado_por') || undefined;
 
     const leads = await getKanbanLeads({ regiao, iniciado_por });
 
-    // Disparar verificação em BACKGROUND (não aguarda!)
-    // Isso permite que a página carregue instantaneamente
     verificarLeadsBackground([...leads]).catch(err => {
       console.error('[Background] Erro na verificação:', err);
     });
 
-    // Agrupar por stage para o Kanban (4 colunas)
     const grouped: Record<string, any[]> = {
       novo: [],
       qualificado: [],
@@ -75,17 +69,16 @@ export async function GET(req: NextRequest) {
     };
 
     leads.forEach((lead) => {
-      // Migrar stages antigos para os novos
       let stage = lead.stage || 'novo';
       if (stage === 'em_atendimento' || stage === 'proposta') {
-        stage = 'novo'; // Migra para "novo"
+        stage = 'novo';
       }
-      
-      // Pegar follow-up pendente mais próximo
-      const followupPendente = (lead.followups || [])
+
+      const followupsArr = lead.followups || lead.tatiane_followups || [];
+      const followupPendente = followupsArr
         .filter((f: any) => f.status === 'pendente')
-        .sort((a: any, b: any) => a.data_agendada.localeCompare(b.data_agendada))[0];
-      
+        .sort((a: any, b: any) => (a.data_agendada || '').localeCompare(b.data_agendada || ''))[0];
+
       if (grouped[stage]) {
         grouped[stage].push({
           lead_id: lead.id,
