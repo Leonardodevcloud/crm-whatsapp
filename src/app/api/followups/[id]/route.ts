@@ -1,7 +1,6 @@
 // ===========================================
 // API: /api/followups/[id]
-// PATCH: Atualizar follow-up (concluir, cancelar)
-// DELETE: Deletar follow-up
+// v3 - tatiane_followups: 'enviado_em' substitui 'completed_at'
 // ===========================================
 
 import { NextRequest, NextResponse } from 'next/server';
@@ -23,7 +22,7 @@ export async function PATCH(
     const client = supabaseAdmin || supabase;
     const { id } = await params;
     const body = await req.json();
-    
+
     const { acao, data_agendada, notas } = body;
 
     if (!acao) {
@@ -39,7 +38,7 @@ export async function PATCH(
       case 'concluir':
         updateData = {
           status: 'concluido',
-          completed_at: new Date().toISOString(),
+          enviado_em: new Date().toISOString(),
         };
         break;
 
@@ -58,8 +57,10 @@ export async function PATCH(
         }
         updateData = {
           data_agendada,
-          notas: notas || undefined,
         };
+        if (notas) {
+          updateData.mensagem = `[notas: ${notas}]`;
+        }
         break;
 
       default:
@@ -70,7 +71,7 @@ export async function PATCH(
     }
 
     const { data, error } = await client
-      .from('followups')
+      .from('tatiane_followups')
       .update(updateData)
       .eq('id', parseInt(id))
       .select()
@@ -109,7 +110,7 @@ export async function DELETE(
     const { id } = await params;
 
     const { error } = await client
-      .from('followups')
+      .from('tatiane_followups')
       .delete()
       .eq('id', parseInt(id));
 
