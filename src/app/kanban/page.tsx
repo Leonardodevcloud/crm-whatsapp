@@ -55,6 +55,43 @@ interface KanbanCard {
   resumo_ia?: string | null;
 }
 
+// Helpers seguros para datas — protegem contra Invalid Date no SSR
+// (Postgres às vezes retorna timestamps sem 'T'/'Z', o que quebra new Date() no Node)
+function parseDateSafe(value: any): Date | null {
+  if (!value) return null;
+  let s = String(value);
+  // "2026-04-22 19:43:01.377" → "2026-04-22T19:43:01.377Z"
+  if (s.includes(' ') && !s.includes('T')) {
+    s = s.replace(' ', 'T');
+  }
+  // Se não tem timezone explícito (Z, +XX, -XX após o tempo), adiciona Z (UTC)
+  if (s.includes('T') && !/[Zz]|[+-]\d{2}:?\d{2}$/.test(s)) {
+    s = s + 'Z';
+  }
+  const d = new Date(s);
+  return isNaN(d.getTime()) ? null : d;
+}
+
+function safeFormatDistanceToNow(value: any, options?: any): string {
+  const d = parseDateSafe(value);
+  if (!d) return '';
+  try {
+    return formatDistanceToNow(d, options);
+  } catch {
+    return '';
+  }
+}
+
+function safeFormat(value: any, pattern: string): string {
+  const d = parseDateSafe(value);
+  if (!d) return '';
+  try {
+    return format(d, pattern);
+  } catch {
+    return '';
+  }
+}
+
 // Função para formatar nome com código como prefixo
 function formatNomeComCodigo(nomewpp: string | null, cod_profissional: string | null | undefined): string {
   if (cod_profissional && nomewpp) {
@@ -507,21 +544,28 @@ function KanbanContent() {
                           )}
 
                           {/* Badge Follow-up Agendado */}
-                          {card.followup_data && (
+                          {card.followup_data && (() => {
+                            const dataFollowup = parseDateSafe(card.followup_data + 'T12:00:00');
+                            if (!dataFollowup) return null;
+                            const hoje = new Date();
+                            const isAtrasado = dataFollowup < hoje;
+                            const isHoje = dataFollowup.toDateString() === hoje.toDateString();
+                            return (
                             <div className="flex items-center gap-1 mt-2">
                               <span className={clsx(
                                 'inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium',
-                                new Date(card.followup_data + 'T12:00:00') < new Date() 
-                                  ? 'bg-red-100 text-red-700' 
-                                  : new Date(card.followup_data + 'T12:00:00').toDateString() === new Date().toDateString()
+                                isAtrasado
+                                  ? 'bg-red-100 text-red-700'
+                                  : isHoje
                                     ? 'bg-yellow-100 text-yellow-700'
                                     : 'bg-blue-100 text-blue-700'
                               )}>
                                 <CalendarPlus className="w-3 h-3" />
-                                {format(new Date(card.followup_data + 'T12:00:00'), "dd/MM")}
+                                {safeFormat(card.followup_data + 'T12:00:00', "dd/MM")}
                               </span>
                             </div>
-                          )}
+                            );
+                          })()}
 
                           {/* Badge Resumo IA - Clicável */}
                           {card.resumo_ia && (
@@ -576,7 +620,7 @@ function KanbanContent() {
                               <div className="flex items-center gap-1 text-xs text-gray-400">
                                 <Clock className="w-3 h-3" />
                                 <span>
-                                  {formatDistanceToNow(new Date(card.updated_at), {
+                                  {safeFormatDistanceToNow(card.updated_at, {
                                     addSuffix: true,
                                     locale: ptBR,
                                   })}
