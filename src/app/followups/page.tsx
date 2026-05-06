@@ -133,9 +133,29 @@ function FollowupsContent() {
     router.push(`/chat/${leadId}`);
   };
 
-  // Formatar data
+  // Formatar data — robusta contra Invalid Date
+  // tatiane_followups.data_agendada é timestamptz, mas pode vir em vários formatos
   const formatarData = (data: string) => {
-    return format(new Date(data + 'T12:00:00'), "dd 'de' MMM", { locale: ptBR });
+    if (!data) return '';
+    let s = String(data);
+    // Se for só "YYYY-MM-DD", adicionar hora pra ficar no meio do dia (evita rolar p/ ontem por timezone)
+    if (/^\d{4}-\d{2}-\d{2}$/.test(s)) {
+      s = s + 'T12:00:00';
+    } else if (s.includes(' ') && !s.includes('T')) {
+      // "2026-04-25 15:30:00.123+00" → "2026-04-25T15:30:00.123+00"
+      s = s.replace(' ', 'T');
+    }
+    // Se ficou sem timezone, assume UTC
+    if (s.includes('T') && !/[Zz]|[+-]\d{2}:?\d{2}$/.test(s)) {
+      s = s + 'Z';
+    }
+    const d = new Date(s);
+    if (isNaN(d.getTime())) return '';
+    try {
+      return format(d, "dd 'de' MMM", { locale: ptBR });
+    } catch {
+      return '';
+    }
   };
 
   // Badge de situação
