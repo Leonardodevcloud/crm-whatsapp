@@ -1,6 +1,10 @@
 // ===========================================
 // Supabase Client - CRM WhatsApp Tutts
-// v2 - chatLid support + deduplicação + busca robusta
+// v3 - Adaptado para banco da Tatiane
+//   - dados_cliente (compartilhado)
+//   - tatiane_chat_histories (substitui chats + chat_messages + n8n_chat_histories)
+//   - tatiane_followups (substitui followups)
+//   - tatiane_resumos (origem do resumo_ia)
 // ===========================================
 
 import { createClient } from '@supabase/supabase-js';
@@ -12,10 +16,6 @@ const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 if (!supabaseUrl || !supabaseAnonKey) {
   throw new Error('Variáveis NEXT_PUBLIC_SUPABASE_URL e NEXT_PUBLIC_SUPABASE_ANON_KEY são obrigatórias');
 }
-
-// ===========================================
-// Helpers
-// ===========================================
 
 export function userIdToUuid(userId: number | string): string {
   const id = userId.toString();
@@ -39,10 +39,6 @@ export const supabaseAdmin = supabaseServiceKey
 
 export const hasAdminAccess = () => !!supabaseAdmin;
 
-// ===========================================
-// Utils
-// ===========================================
-
 export function normalizePhone(phone: string): string {
   if (!phone) return '';
   return phone
@@ -52,29 +48,25 @@ export function normalizePhone(phone: string): string {
     .replace(/\D/g, '');
 }
 
-/**
- * Gerar todas as variações de identificador para busca
- * O n8n salva chatLid no campo phone em vários formatos
- */
-function getPhoneVariations(phone: string, chatLid?: string | null): string[] {
+function getSessionIdVariations(phone: string, chatLid?: string | null): string[] {
   const variations: string[] = [];
   const normalized = normalizePhone(phone);
-  
-  if (normalized) {
-    variations.push(normalized);
-    variations.push(normalized + '@s.whatsapp.net');
-  }
-  
-  if (phone && phone.includes('@lid')) {
-    variations.push(phone);
-  }
-  
+
   if (chatLid) {
     variations.push(chatLid);
     const lidDigits = normalizePhone(chatLid);
     if (lidDigits) variations.push(lidDigits);
   }
-  
+
+  if (normalized) {
+    variations.push(normalized);
+    variations.push(normalized + '@s.whatsapp.net');
+  }
+
+  if (phone && phone.includes('@lid')) {
+    variations.push(phone);
+  }
+
   return Array.from(new Set(variations)).filter(Boolean);
 }
 
@@ -89,11 +81,31 @@ export function formatPhone(phone: string): string {
   return phone;
 }
 
-// ===========================================
-// Database Helpers
-// ===========================================
+import type { Lead, ChatMessage, InboxItem } from '@/types';
 
-import type { Lead, Chat, ChatMessage, InboxItem } from '@/types';
+async function getResumosBatch(leadIds: number[]): Promise<Map<number, string>> {
+  const result = new Map<number, string>();
+  if (leadIds.length === 0) return result;
+
+  const client = supabaseAdmin || supabase;
+  const { data, error } = await client
+    .from('tatiane_resumos')
+    .select('lead_id, resumo, created_at')
+    .in('lead_id', leadIds)
+    .order('created_at', { ascending: false });
+
+  if (error) {
+    console.error('Erro ao buscar resumos:', error);
+    return result;
+  }
+
+  for (const row of data || []) {
+    if (row.lead_id && !result.has(row.lead_id)) {
+      result.set(row.lead_id, row.resumo);
+    }
+  }
+  return result;
+}
 
 export async function getInboxLeads(filters?: {
   stage?: string;
@@ -105,15 +117,14 @@ export async function getInboxLeads(filters?: {
   offset?: number;
 }): Promise<InboxItem[]> {
   const client = supabaseAdmin || supabase;
-  
+
   let query = client
     .from('dados_cliente')
     .select(`
       id, uuid, telefone, nomewpp, stage, atendimento_ia, owner_user_id,
       tags, regiao, iniciado_por, updated_at, created_at, cod_profissional,
-      resumo_ia, data_ativacao, chat_lid,
-      chats!left (id, status, last_message_at),
-      followups!left (id, data_agendada, motivo, status)
+      data_ativacao, chat_lid,
+      tatiane_followups!left (id, data_agendada, motivo, status)
     `)
     .eq('status', 'ativo')
     .order('updated_at', { ascending: false });
@@ -125,7 +136,7 @@ export async function getInboxLeads(filters?: {
   if (filters?.search) {
     query = query.or(`nomewpp.ilike.%${filters.search}%,telefone.ilike.%${filters.search}%,cod_profissional.ilike.%${filters.search}%`);
   }
-  
+
   const limit = filters?.limit || 50;
   const offset = filters?.offset || 0;
   query = query.range(offset, offset + limit - 1);
@@ -133,12 +144,14 @@ export async function getInboxLeads(filters?: {
   const { data, error } = await query;
   if (error) { console.error('Erro ao buscar inbox:', error); throw error; }
 
+  const leadIds = (data || []).map((l: any) => l.id);
+  const resumosMap = await getResumosBatch(leadIds);
+
   return (data || []).map((lead: any) => {
-    const chat = lead.chats?.[0];
-    const followupPendente = (lead.followups || [])
+    const followupPendente = (lead.tatiane_followups || [])
       .filter((f: any) => f.status === 'pendente')
-      .sort((a: any, b: any) => a.data_agendada.localeCompare(b.data_agendada))[0];
-    
+      .sort((a: any, b: any) => (a.data_agendada || '').localeCompare(b.data_agendada || ''))[0];
+
     return {
       lead_id: lead.id,
       lead_uuid: lead.uuid,
@@ -151,10 +164,10 @@ export async function getInboxLeads(filters?: {
       regiao: lead.regiao || null,
       iniciado_por: lead.iniciado_por || null,
       cod_profissional: lead.cod_profissional || null,
-      resumo_ia: lead.resumo_ia || null,
-      chat_id: chat?.id || null,
-      chat_status: chat?.status || null,
-      last_message_at: chat?.last_message_at || lead.updated_at,
+      resumo_ia: resumosMap.get(lead.id) || null,
+      chat_id: null,
+      chat_status: null,
+      last_message_at: lead.updated_at,
       last_message_preview: null,
       unread_count: 0,
       followup_data: followupPendente?.data_agendada || null,
@@ -177,127 +190,54 @@ export async function getLeadByPhone(phone: string): Promise<Lead | null> {
   return data || null;
 }
 
-/**
- * Buscar chat por lead_id — cascata robusta:
- * 1. chat_lid (Z-API, mais confiável)
- * 2. lead_id (FK direta)
- * 3. phone/telefone/remotejid (todas as variações)
- */
-export async function getChatByLeadId(leadId: number): Promise<Chat | null> {
+export async function getResumoIA(leadId: number): Promise<string | null> {
   const client = supabaseAdmin || supabase;
-  const lead = await getLeadById(leadId);
-  if (!lead) return null;
-  
-  // 1. Por chat_lid
-  if (lead.chat_lid) {
-    const { data } = await client.from('chats').select('*')
-      .eq('chat_lid', lead.chat_lid).order('created_at', { ascending: false }).limit(1).maybeSingle();
-    if (data) return data;
-  }
-
-  // 2. Por lead_id
-  {
-    const { data } = await client.from('chats').select('*')
-      .eq('lead_id', leadId).order('created_at', { ascending: false }).limit(1).maybeSingle();
-    if (data) return data;
-  }
-
-  // 3. Por phone/telefone/remotejid (todas as variações)
-  if (lead.telefone || lead.chat_lid) {
-    const variations = getPhoneVariations(lead.telefone || '', lead.chat_lid);
-    const orParts: string[] = [];
-    for (const v of variations) {
-      orParts.push(`phone.eq.${v}`, `telefone.eq.${v}`, `remotejid.eq.${v}`);
-    }
-    if (orParts.length > 0) {
-      const { data } = await client.from('chats').select('*')
-        .or(orParts.join(',')).order('created_at', { ascending: false }).limit(1).maybeSingle();
-      if (data) return data;
-    }
-  }
-
-  return null;
+  const { data, error } = await client
+    .from('tatiane_resumos')
+    .select('resumo')
+    .eq('lead_id', leadId)
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error) { console.error('Erro ao buscar resumo:', error); return null; }
+  return data?.resumo || null;
 }
 
-export async function getChatMessages(chatId: string, limit: number = 100): Promise<ChatMessage[]> {
-  const client = supabaseAdmin || supabase;
-  const { data, error } = await client.from('chat_messages').select('*')
-    .eq('chat_id', chatId).order('created_at', { ascending: true }).limit(limit);
-  if (error) { console.error('Erro ao buscar mensagens:', error); throw error; }
-  return data || [];
-}
-
-/**
- * Buscar mensagens por telefone/chatLid
- * O n8n salva chatLid no campo "phone" de chat_messages
- * Deduplicação por provider_message_id (Z-API envia webhooks duplicados)
- */
-export async function getChatMessagesByPhone(
-  phone: string, limit: number = 100, chatLid?: string | null
-): Promise<ChatMessage[]> {
-  const client = supabaseAdmin || supabase;
-  const variations = getPhoneVariations(phone, chatLid);
-  if (variations.length === 0) return [];
-  
-  const orFilter = variations.map(v => `phone.eq.${v}`).join(',');
-  const { data, error } = await client.from('chat_messages').select('*')
-    .or(orFilter).order('created_at', { ascending: true }).limit(limit);
-  if (error) { console.error('Erro ao buscar mensagens por telefone:', error); throw error; }
-
-  // Deduplicar por provider_message_id
-  const seen = new Set<string>();
-  return (data || []).filter(msg => {
-    if (!msg.provider_message_id) return true;
-    if (seen.has(msg.provider_message_id)) return false;
-    seen.add(msg.provider_message_id);
-    return true;
-  });
-}
-
-/**
- * Buscar mensagens do histórico n8n (n8n_chat_histories)
- * 
- * CUIDADO: Tabela NÃO tem created_at. Ordena por id (serial).
- * session_id pode ser telefone OU chatLid.
- * type "human" = out, type "ai" = in (invertido).
- * BUG CONHECIDO: Salvar Historicoo Humano salva humano como "ai" — corrigir no n8n.
- */
-export async function getN8nChatHistory(
+export async function getTatianeChatHistory(
   phone: string, limit: number = 200, chatLid?: string | null
 ): Promise<ChatMessage[]> {
   const client = supabaseAdmin || supabase;
-  const variations = getPhoneVariations(phone, chatLid);
+  const variations = getSessionIdVariations(phone, chatLid);
   if (variations.length === 0) return [];
-  
+
   const orFilter = variations.map(v => `session_id.eq.${v}`).join(',');
-  const { data, error } = await client.from('n8n_chat_histories').select('*')
-    .or(orFilter).order('id', { ascending: true }).limit(limit);
-  if (error) { console.error('Erro ao buscar histórico n8n:', error); return []; }
+  const { data, error } = await client
+    .from('tatiane_chat_histories')
+    .select('*')
+    .or(orFilter)
+    .order('created_at', { ascending: true })
+    .order('id', { ascending: true })
+    .limit(limit);
+  if (error) { console.error('Erro ao buscar histórico Tatiane:', error); return []; }
   if (!data || data.length === 0) return [];
 
   const normalizedPhone = normalizePhone(phone);
 
   return data.map((row: any, index: number) => {
-    let messageData: any = {};
-    if (typeof row.message === 'string') {
-      try { messageData = JSON.parse(row.message); } catch { messageData = { type: 'human', content: row.message }; }
-    } else if (row.message) {
-      messageData = row.message;
-    }
-
-    const direction = messageData.type === 'human' ? 'out' : 'in';
+    const direction: 'in' | 'out' = row.message_type === 'human' ? 'in' : 'out';
     const timestamp = row.created_at || new Date(Date.now() - (data.length - index) * 60000).toISOString();
+    const meta = (typeof row.metadata === 'object' && row.metadata) ? row.metadata : {};
 
     return {
-      id: row.id?.toString() || `n8n_${index}`,
+      id: row.id?.toString() || `tat_${index}`,
       created_at: timestamp,
-      chat_id: `n8n_${normalizedPhone}`,
+      chat_id: `tat_${normalizedPhone || chatLid || 'sess'}`,
       direction,
-      message_type: 'text',
-      body: messageData.content || '',
-      media_url: null,
-      media_meta: {},
-      provider_message_id: `n8n_${row.id}`,
+      message_type: meta.message_type || 'text',
+      body: row.content || '',
+      media_url: meta.media_url || null,
+      media_meta: meta.media_meta || meta || {},
+      provider_message_id: meta.provider_message_id || `tat_${row.id}`,
       status: 'delivered',
       sent_at: timestamp,
       phone: normalizedPhone,
@@ -305,10 +245,6 @@ export async function getN8nChatHistory(
     } as ChatMessage;
   });
 }
-
-// ===========================================
-// Write Operations
-// ===========================================
 
 export async function updateLead(
   leadId: number,
@@ -325,7 +261,7 @@ export async function updateLead(
 export async function assumirAtendimento(leadId: number, userId: string): Promise<{ success: boolean; message: string }> {
   const client = supabaseAdmin || supabase;
   console.log(`[assumir] Lead: ${leadId}, User: ${userId}`);
-  
+
   const { data: lead, error: selectError } = await client.from('dados_cliente')
     .select('owner_user_id, nomewpp').eq('id', leadId).single();
   if (selectError) { console.error('[assumir] Erro:', selectError); return { success: false, message: 'Erro ao buscar lead' }; }
@@ -338,7 +274,7 @@ export async function assumirAtendimento(leadId: number, userId: string): Promis
     .eq('id', leadId).select();
   if (error) { return { success: false, message: 'Erro ao assumir: ' + error.message }; }
   if (!data || data.length === 0) { return { success: false, message: 'Lead não encontrado' }; }
-  
+
   console.log(`[assumir] Sucesso! Lead ${leadId} assumido por ${userId}`);
   return { success: true, message: 'Atendimento assumido com sucesso' };
 }
@@ -353,31 +289,37 @@ export async function reativarIA(leadId: number): Promise<boolean> {
 
 export async function finalizarAtendimento(leadId: number): Promise<boolean> {
   const client = supabaseAdmin || supabase;
-  
+
   const { error } = await client.from('dados_cliente')
     .update({ stage: 'finalizado', atendimento_ia: 'ativa', updated_at: new Date().toISOString() })
     .eq('id', leadId);
   if (error) { console.error('Erro ao finalizar:', error); return false; }
 
-  const lead = await getLeadById(leadId);
-  await client.from('chats').update({ status: 'closed' }).eq('lead_id', leadId);
-  if (lead?.chat_lid) {
-    await client.from('chats').update({ status: 'closed' }).eq('chat_lid', lead.chat_lid);
-  }
   return true;
 }
 
 export async function getKanbanLeads(filters?: { regiao?: string; iniciado_por?: string; incluirFinalizados?: boolean }): Promise<any[]> {
   const client = supabaseAdmin || supabase;
   let query = client.from('dados_cliente')
-    .select(`*, followups!left (id, data_agendada, motivo, status)`)
+    .select(`*, tatiane_followups!left (id, data_agendada, motivo, status)`)
     .eq('status', 'ativo').order('updated_at', { ascending: false }).limit(200);
   if (filters?.incluirFinalizados === false) query = query.neq('stage', 'finalizado');
   if (filters?.regiao) query = query.eq('regiao', filters.regiao);
   if (filters?.iniciado_por) query = query.eq('iniciado_por', filters.iniciado_por);
   const { data, error } = await query;
   if (error) { console.error('Erro ao buscar kanban:', error); throw error; }
-  return data || [];
+
+  const rows = data || [];
+  if (rows.length === 0) return [];
+
+  const leadIds = rows.map((l: any) => l.id);
+  const resumosMap = await getResumosBatch(leadIds);
+
+  return rows.map((lead: any) => ({
+    ...lead,
+    followups: lead.tatiane_followups || [],
+    resumo_ia: resumosMap.get(lead.id) || null,
+  }));
 }
 
 export async function getRegioes(): Promise<string[]> {
