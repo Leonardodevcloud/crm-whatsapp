@@ -5,6 +5,7 @@
 //   - tatiane_chat_histories (substitui chats + chat_messages + n8n_chat_histories)
 //   - tatiane_followups (substitui followups)
 //   - tatiane_resumos (origem do resumo_ia)
+// v4 - Suporte a arquivamento (status='arquivado')
 // ===========================================
 
 import { createClient } from '@supabase/supabase-js';
@@ -298,11 +299,19 @@ export async function finalizarAtendimento(leadId: number): Promise<boolean> {
   return true;
 }
 
-export async function getKanbanLeads(filters?: { regiao?: string; iniciado_por?: string; incluirFinalizados?: boolean }): Promise<any[]> {
+export async function getKanbanLeads(filters?: { regiao?: string; iniciado_por?: string; incluirFinalizados?: boolean; incluirArquivados?: boolean }): Promise<any[]> {
   const client = supabaseAdmin || supabase;
   let query = client.from('dados_cliente')
     .select(`*, tatiane_followups!left (id, data_agendada, motivo, status)`)
-    .eq('status', 'ativo').order('updated_at', { ascending: false }).limit(200);
+    .order('updated_at', { ascending: false }).limit(200);
+
+  // Status: 'ativo' (padrão) ou inclui 'arquivado' quando solicitado
+  if (filters?.incluirArquivados) {
+    query = query.in('status', ['ativo', 'arquivado']);
+  } else {
+    query = query.eq('status', 'ativo');
+  }
+
   if (filters?.incluirFinalizados === false) query = query.neq('stage', 'finalizado');
   if (filters?.regiao) query = query.eq('regiao', filters.regiao);
   if (filters?.iniciado_por) query = query.eq('iniciado_por', filters.iniciado_por);
@@ -320,6 +329,20 @@ export async function getKanbanLeads(filters?: { regiao?: string; iniciado_por?:
     followups: lead.tatiane_followups || [],
     resumo_ia: resumosMap.get(lead.id) || null,
   }));
+}
+
+/**
+ * Reativa um lead arquivado (volta status='arquivado' para 'ativo').
+ * Usado pelo botão "Reativar" em cards arquivados.
+ */
+export async function reativarLeadArquivado(leadId: number): Promise<boolean> {
+  const client = supabaseAdmin || supabase;
+  const { error } = await client.from('dados_cliente')
+    .update({ status: 'ativo', updated_at: new Date().toISOString() })
+    .eq('id', leadId)
+    .eq('status', 'arquivado');
+  if (error) { console.error('Erro ao reativar lead arquivado:', error); return false; }
+  return true;
 }
 
 export async function getRegioes(): Promise<string[]> {
