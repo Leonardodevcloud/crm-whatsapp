@@ -25,6 +25,7 @@ import {
   Sparkles,
   ChevronDown,
   ChevronUp,
+  Archive,
 } from 'lucide-react';
 import { formatDistanceToNow, format, addDays } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
@@ -44,6 +45,7 @@ interface KanbanCard {
   nomewpp: string | null;
   telefone: string;
   stage: string;
+  status?: 'ativo' | 'arquivado' | string;
   atendimento_ia: string | null;
   tags: string[];
   regiao: string | null;
@@ -237,6 +239,7 @@ function KanbanContent() {
   const [regiaoFilter, setRegiaoFilter] = useState('');
   const [iniciadoPorFilter, setIniciadoPorFilter] = useState('');
   const [searchFilter, setSearchFilter] = useState('');
+  const [mostrarArquivados, setMostrarArquivados] = useState(false);
   const [regioes, setRegioes] = useState<string[]>([]);
   const [verificacaoInfo, setVerificacaoInfo] = useState<{verificados: number; atualizados: number} | null>(null);
   const [followupModalCard, setFollowupModalCard] = useState<KanbanCard | null>(null);
@@ -264,6 +267,7 @@ function KanbanContent() {
     const params = new URLSearchParams();
     if (regiaoFilter) params.set('regiao', regiaoFilter);
     if (iniciadoPorFilter) params.set('iniciado_por', iniciadoPorFilter);
+    if (mostrarArquivados) params.set('incluir_arquivados', 'true');
 
     const { data: response, error } = await fetchApi<{ 
       success: boolean; 
@@ -284,7 +288,7 @@ function KanbanContent() {
 
     setIsLoading(false);
     setIsRefreshing(false);
-  }, [fetchApi, regiaoFilter, iniciadoPorFilter]);
+  }, [fetchApi, regiaoFilter, iniciadoPorFilter, mostrarArquivados]);
 
   useEffect(() => {
     loadKanban();
@@ -360,6 +364,19 @@ function KanbanContent() {
     router.push(`/chat/${leadId}`);
   };
 
+  // Reativar lead arquivado
+  const reativarLead = async (e: React.MouseEvent, leadId: number) => {
+    e.stopPropagation();
+    const { error } = await fetchApi(`/api/leads/${leadId}/reativar`, {
+      method: 'POST',
+    });
+    if (error) {
+      setError(error);
+    } else {
+      await loadKanban();
+    }
+  };
+
   // Cor do header baseada na coluna
   const getColumnHeaderColor = (color: string) => {
     const colors: Record<string, string> = {
@@ -432,6 +449,17 @@ function KanbanContent() {
           </select>
         </div>
 
+        {/* Toggle Mostrar Arquivados */}
+        <label className="flex items-center gap-2 cursor-pointer select-none px-3 py-2 rounded-lg border border-gray-200 hover:bg-gray-50 transition-colors">
+          <input
+            type="checkbox"
+            checked={mostrarArquivados}
+            onChange={(e) => setMostrarArquivados(e.target.checked)}
+            className="w-4 h-4 rounded border-gray-300 text-purple-600 focus:ring-purple-500"
+          />
+          <span className="text-sm text-gray-700">Mostrar arquivados</span>
+        </label>
+
         <button
           onClick={loadKanban}
           disabled={isRefreshing}
@@ -491,21 +519,44 @@ function KanbanContent() {
 
                 {/* Cards */}
                 <div className="flex-1 overflow-y-auto space-y-2 scrollbar-thin">
-                  {cards.map((card) => (
+                  {cards.map((card) => {
+                    const isArquivado = card.status === 'arquivado';
+                    return (
                     <div
                       key={card.lead_id}
-                      draggable
-                      onDragStart={() => handleDragStart(card)}
+                      draggable={!isArquivado}
+                      onDragStart={() => !isArquivado && handleDragStart(card)}
                       onDragEnd={handleDragEnd}
                       onClick={() => openChat(card.lead_id)}
                       className={clsx(
                         'kanban-card group',
-                        draggingCard?.lead_id === card.lead_id && 'opacity-50'
+                        draggingCard?.lead_id === card.lead_id && 'opacity-50',
+                        isArquivado && 'opacity-60 border-dashed border-2 border-gray-300'
                       )}
                     >
+                      {/* Badge Arquivado */}
+                      {isArquivado && (
+                        <div className="flex items-center justify-between mb-2 pb-2 border-b border-gray-200">
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-gray-200 text-gray-700">
+                            <Archive className="w-3 h-3" />
+                            Arquivado
+                          </span>
+                          <button
+                            onClick={(e) => reativarLead(e, card.lead_id)}
+                            className="text-xs text-purple-600 hover:text-purple-800 font-medium hover:underline"
+                            title="Reativar lead"
+                          >
+                            Reativar
+                          </button>
+                        </div>
+                      )}
+
                       {/* Drag handle */}
                       <div className="flex items-start gap-2">
-                        <GripVertical className="w-4 h-4 text-gray-400 opacity-0 group-hover:opacity-100 transition-opacity cursor-grab flex-shrink-0 mt-1" />
+                        <GripVertical className={clsx(
+                          "w-4 h-4 text-gray-400 transition-opacity flex-shrink-0 mt-1",
+                          isArquivado ? "opacity-0" : "opacity-0 group-hover:opacity-100 cursor-grab"
+                        )} />
                         <div className="flex-1 min-w-0">
                           {/* Nome com código como prefixo */}
                           <div className="flex items-center gap-2">
@@ -642,7 +693,8 @@ function KanbanContent() {
                         </div>
                       </div>
                     </div>
-                  ))}
+                    );
+                  })}
 
                   {/* Empty state */}
                   {cards.length === 0 && (
