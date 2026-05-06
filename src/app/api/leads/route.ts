@@ -2,6 +2,7 @@
 // API: /api/leads
 // GET: Lista leads para Kanban
 // v3 - Adaptado para tatiane_followups + resumo de tatiane_resumos
+// v4 - Suporte a ?incluir_arquivados=true
 // ===========================================
 
 import { NextRequest, NextResponse } from 'next/server';
@@ -54,8 +55,9 @@ export async function GET(req: NextRequest) {
     const { searchParams } = new URL(req.url);
     const regiao = searchParams.get('regiao') || undefined;
     const iniciado_por = searchParams.get('iniciado_por') || undefined;
+    const incluirArquivados = searchParams.get('incluir_arquivados') === 'true';
 
-    const leads = await getKanbanLeads({ regiao, iniciado_por });
+    const leads = await getKanbanLeads({ regiao, iniciado_por, incluirArquivados });
 
     verificarLeadsBackground([...leads]).catch(err => {
       console.error('[Background] Erro na verificação:', err);
@@ -86,6 +88,7 @@ export async function GET(req: NextRequest) {
           nomewpp: lead.nomewpp,
           telefone: lead.telefone,
           stage: stage,
+          status: lead.status, // 'ativo' ou 'arquivado' — UI usa pra mostrar badge/botão
           atendimento_ia: lead.atendimento_ia,
           tags: lead.tags || [],
           regiao: lead.regiao,
@@ -105,7 +108,7 @@ export async function GET(req: NextRequest) {
       success: true,
       data: grouped,
       total: leads.length,
-      filters: { regiao, iniciado_por },
+      filters: { regiao, iniciado_por, incluirArquivados },
     });
   } catch (error: any) {
     console.error('Erro na API leads:', error);
