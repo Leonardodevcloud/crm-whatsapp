@@ -42,42 +42,4 @@ export async function GET(
         if (novoStage && novoStage !== lead.stage) {
           console.log(`[Chat API] Stage: ${lead.stage} -> ${novoStage}`);
           const leadAtualizado = await updateLead(leadIdNum, { stage: novoStage });
-          if (leadAtualizado) { lead = leadAtualizado; stageAtualizado = true; }
-        }
-      } catch (tuttsError) {
-        console.error('[Chat API] Erro Tutts:', tuttsError);
-      }
-    }
-
-    const chatLid = lead.chat_lid || null;
-    const messages = await getTatianeChatHistory(lead.telefone || '', 200, chatLid);
-
-    const chat: Chat = {
-      id: chatLid || `lead_${leadIdNum}`,
-      status: lead.stage === 'finalizado' ? 'closed' : 'open',
-      last_message_at: messages.length > 0 ? messages[messages.length - 1].created_at : lead.updated_at,
-      lead_id: leadIdNum,
-      chat_lid: chatLid,
-    };
-
-    return NextResponse.json({
-      success: true,
-      data: {
-        lead,
-        chat,
-        messages,
-        tuttsVerificacao: tuttsStatus ? {
-          encontrado: tuttsStatus.found,
-          ativo: tuttsStatus.ativo,
-          stageAtualizado,
-        } : null,
-      },
-    });
-  } catch (error: any) {
-    console.error('Erro na API chat:', error);
-    return NextResponse.json(
-      { error: 'Erro ao buscar chat', success: false, details: error.message },
-      { status: 500 }
-    );
-  }
-}
+          if (leadAtualizado) { lead = leadAtualizado; stageAtualizado =
