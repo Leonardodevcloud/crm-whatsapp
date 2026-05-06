@@ -1,5 +1,6 @@
 // ===========================================
 // API: /api/chat/[leadId]
+// GET: Retorna lead, chat (sintético) e mensagens da Tatiane
 // v3 - Adaptado para tatiane_chat_histories
 // ===========================================
 
@@ -31,6 +32,7 @@ export async function GET(
       return NextResponse.json({ error: 'Lead não encontrado', success: false }, { status: 404 });
     }
 
+    // Verificação automática na API Tutts
     let tuttsStatus = null;
     let stageAtualizado = false;
 
@@ -42,4 +44,44 @@ export async function GET(
         if (novoStage && novoStage !== lead.stage) {
           console.log(`[Chat API] Stage: ${lead.stage} -> ${novoStage}`);
           const leadAtualizado = await updateLead(leadIdNum, { stage: novoStage });
-          if (leadAtualizado) { lead = leadAtualizado; stageAtualizado =
+          if (leadAtualizado) { lead = leadAtualizado; stageAtualizado = true; }
+        }
+      } catch (tuttsError) {
+        console.error('[Chat API] Erro Tutts:', tuttsError);
+      }
+    }
+
+    // Buscar mensagens em tatiane_chat_histories (única fonte agora)
+    const chatLid = lead.chat_lid || null;
+    const messages = await getTatianeChatHistory(lead.telefone || '', 200, chatLid);
+
+    // Chat sintético (compat com UI que ainda lê 'chat.status')
+    const chat: Chat = {
+      id: chatLid || `lead_${leadIdNum}`,
+      status: lead.stage === 'finalizado' ? 'closed' : 'open',
+      last_message_at: messages.length > 0 ? messages[messages.length - 1].created_at : lead.updated_at,
+      lead_id: leadIdNum,
+      chat_lid: chatLid,
+    };
+
+    return NextResponse.json({
+      success: true,
+      data: {
+        lead,
+        chat,
+        messages,
+        tuttsVerificacao: tuttsStatus ? {
+          encontrado: tuttsStatus.found,
+          ativo: tuttsStatus.ativo,
+          stageAtualizado,
+        } : null,
+      },
+    });
+  } catch (error: any) {
+    console.error('Erro na API chat:', error);
+    return NextResponse.json(
+      { error: 'Erro ao buscar chat', success: false, details: error.message },
+      { status: 500 }
+    );
+  }
+}
