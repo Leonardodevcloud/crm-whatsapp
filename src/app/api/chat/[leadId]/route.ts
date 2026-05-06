@@ -1,13 +1,13 @@
 // ===========================================
 // API: /api/chat/[leadId]
-// GET: Retorna lead, chat e mensagens
-// v2 - Passa chatLid para todas as buscas de mensagens
+// v3 - Adaptado para tatiane_chat_histories
 // ===========================================
 
 import { NextRequest, NextResponse } from 'next/server';
 import { getUserFromHeader } from '@/lib/auth';
-import { getLeadById, getChatByLeadId, getChatMessages, getChatMessagesByPhone, getN8nChatHistory, updateLead } from '@/lib/supabase';
+import { getLeadById, getTatianeChatHistory, updateLead } from '@/lib/supabase';
 import { verificarStatusProfissional, determinarNovoStage } from '@/lib/tutts-api';
+import type { Chat } from '@/types';
 
 export async function GET(
   req: NextRequest,
@@ -31,10 +31,9 @@ export async function GET(
       return NextResponse.json({ error: 'Lead não encontrado', success: false }, { status: 404 });
     }
 
-    // Verificação automática na API Tutts
     let tuttsStatus = null;
     let stageAtualizado = false;
-    
+
     if (lead.telefone && lead.stage !== 'finalizado') {
       try {
         const statusTutts = await verificarStatusProfissional(lead.telefone);
@@ -50,27 +49,16 @@ export async function GET(
       }
     }
 
-    // Buscar chat (cascata: chat_lid → lead_id → phone)
-    const chat = await getChatByLeadId(leadIdNum);
-
-    // Buscar mensagens — 3 fontes em cascata
-    let messages: any[] = [];
     const chatLid = lead.chat_lid || null;
-    
-    // Fonte 1: chat_messages pelo chat_id
-    if (chat) {
-      messages = await getChatMessages(chat.id, 200);
-    }
-    
-    // Fonte 2: chat_messages pelo phone/chatLid (com deduplicação)
-    if (messages.length === 0 && (lead.telefone || chatLid)) {
-      messages = await getChatMessagesByPhone(lead.telefone || '', 200, chatLid);
-    }
-    
-    // Fonte 3: n8n_chat_histories (fallback, conversas humanas/IA)
-    if (messages.length === 0 && (lead.telefone || chatLid)) {
-      messages = await getN8nChatHistory(lead.telefone || '', 200, chatLid);
-    }
+    const messages = await getTatianeChatHistory(lead.telefone || '', 200, chatLid);
+
+    const chat: Chat = {
+      id: chatLid || `lead_${leadIdNum}`,
+      status: lead.stage === 'finalizado' ? 'closed' : 'open',
+      last_message_at: messages.length > 0 ? messages[messages.length - 1].created_at : lead.updated_at,
+      lead_id: leadIdNum,
+      chat_lid: chatLid,
+    };
 
     return NextResponse.json({
       success: true,
