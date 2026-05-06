@@ -1,9 +1,8 @@
 // ===========================================
 // Types - CRM WhatsApp Tutts
-// ATUALIZADO: Refletindo schema real do banco
+// v3 - Refletindo schema do banco da Tatiane
 // ===========================================
 
-// ==================== AUTH ====================
 export interface TuttsUser {
   id: number;
   codProfissional: string;
@@ -20,9 +19,6 @@ export interface AuthState {
   isLoading: boolean;
 }
 
-// ==================== DATABASE ====================
-
-// Tabela: dados_cliente (Lead)
 export interface Lead {
   id: number;
   created_at: string;
@@ -30,54 +26,44 @@ export interface Lead {
   uuid: string;
   telefone: string | null;
   nomewpp: string | null;
-  atendimento_ia: 'ativa' | 'pause' | 'reativada' | null;
+  atendimento_ia: 'ativa' | 'on' | 'pause' | 'reativada' | null;
   stage: string;
   status: string;
   owner_user_id: string | null;
   tags: string[];
   origem: string;
   regiao: string | null;
-  iniciado_por: 'lead' | 'humano' | null;
-  // Campos de ressuscitação
+  iniciado_por: 'lead' | 'humano' | string | null;
   ressuscitado_em?: string | null;
   vezes_ressuscitado?: number;
-  // Código do profissional (da planilha)
   cod_profissional?: string | null;
-  // Resumo gerado pela IA
   resumo_ia?: string | null;
-  // Data de ativação (importada da planilha)
   data_ativacao?: string | null;
-  // Controle de enriquecimento
   last_enriched_at?: string | null;
-  // Identificadores Z-API/WhatsApp (usados pelo n8n)
   remotejid?: string | null;
   chat_lid?: string | null;
   remote_jid?: string | null;
+  telefone_numerico?: string | null;
+  pausado_por?: string | null;
+  pausado_em?: string | null;
+  pausado_ate?: string | null;
+  tatiane_ultima_interacao?: string | null;
+  tatiane_total_mensagens?: number;
+  mapp_status?: string | null;
+  mapp_verificado_em?: string | null;
 }
 
-// Tabela: chats
-export interface Chat {
-  id: string; // UUID
+export interface TatianeChatHistory {
+  id: number;
+  session_id: string;
+  message_type: 'human' | 'ai';
+  content: string;
+  metadata: Record<string, any> | null;
   created_at: string;
-  updated_at: string;
-  lead_id: number | null;
-  channel: string;
-  provider: string;
-  remote_jid: string | null;
-  instance_name: string | null;
-  status: 'open' | 'closed' | string;
-  assigned_user_id: string | null;
-  last_message_at: string | null;
-  // 5 colunas de identificação de contato no schema real:
-  phone: string | null;
-  remotejid: string | null;
-  chat_lid: string | null;
-  telefone: string | null;
 }
 
-// Tabela: chat_messages
 export interface ChatMessage {
-  id: string; // UUID
+  id: string;
   created_at: string;
   chat_id: string;
   direction: 'in' | 'out' | 'incoming' | 'outcoming' | 'outgoing_human' | string;
@@ -92,29 +78,39 @@ export interface ChatMessage {
   lead_id: number | null;
 }
 
-// Tabela: n8n_chat_histories (schema REAL - NÃO tem created_at)
-export interface N8nChatHistory {
-  id: number;
-  session_id: string;
-  message: Record<string, any> | string;
+export interface Chat {
+  id: string;
+  status: 'open' | 'closed' | string;
+  last_message_at: string | null;
+  lead_id: number | null;
+  chat_lid?: string | null;
 }
 
-// Tabela: followups
 export interface Followup {
   id: number;
-  lead_id: number;
-  data_agendada: string;
-  motivo: string;
-  notas: string | null;
-  status: 'pendente' | 'concluido' | 'cancelado';
-  tipo: 'manual' | 'automatico';
+  lead_id: number | null;
+  chat_lid: string;
   sequencia: number;
+  tipo: string;
+  status: 'pendente' | 'concluido' | 'falha' | 'cancelado';
+  motivo: string | null;
+  mensagem: string | null;
+  data_agendada: string | null;
+  enviado_em: string | null;
   created_at: string;
-  completed_at: string | null;
-  criado_por: number | null;
+  notas?: string | null;
+  completed_at?: string | null;
+  criado_por?: number | null;
 }
 
-// Tabela: leads_nao_iniciados
+export interface TatianeResumo {
+  id: number;
+  chat_lid: string;
+  lead_id: number | null;
+  resumo: string;
+  created_at: string;
+}
+
 export interface LeadNaoIniciado {
   id: number;
   codigo: string | null;
@@ -127,7 +123,6 @@ export interface LeadNaoIniciado {
   data_cadastro: string | null;
 }
 
-// Tabela: profissionais_observacoes
 export interface ProfissionalObservacao {
   id: number;
   codigo: string;
@@ -137,20 +132,6 @@ export interface ProfissionalObservacao {
   updated_by: string | null;
   created_at: string;
 }
-
-// Tabela: documents (existe no banco, sem uso no código ainda)
-export interface Document {
-  id: string;
-  created_at: string;
-  lead_id: number | null;
-  chat_id: string | null;
-  file_name: string;
-  file_type: string | null;
-  storage_path: string;
-  metadata: Record<string, any>;
-}
-
-// ==================== API RESPONSES ====================
 
 export interface InboxItem {
   lead_id: number;
@@ -162,7 +143,7 @@ export interface InboxItem {
   owner_user_id: string | null;
   tags: string[];
   regiao: string | null;
-  iniciado_por: 'lead' | 'humano' | null;
+  iniciado_por: 'lead' | 'humano' | string | null;
   cod_profissional: string | null;
   resumo_ia: string | null;
   chat_id: string | null;
@@ -180,8 +161,6 @@ export interface ChatDetail {
   messages: ChatMessage[];
 }
 
-// ==================== KANBAN ====================
-
 export type KanbanStage = 'novo' | 'qualificado' | 'finalizado' | 'lead_morto';
 
 export interface KanbanCard {
@@ -190,11 +169,11 @@ export interface KanbanCard {
   nomewpp: string | null;
   telefone: string;
   stage: string;
-  last_message_at: string | null;
+  last_message_at?: string | null;
   atendimento_ia: string | null;
   tags: string[];
   regiao: string | null;
-  iniciado_por: 'lead' | 'humano' | null;
+  iniciado_por: 'lead' | 'humano' | string | null;
   ressuscitado_em?: string | null;
   vezes_ressuscitado?: number;
   cod_profissional?: string | null;
@@ -208,8 +187,6 @@ export interface KanbanColumn {
   title: string;
   cards: KanbanCard[];
 }
-
-// ==================== API ====================
 
 export interface ApiResponse<T = any> {
   success: boolean;
@@ -225,8 +202,6 @@ export interface PaginatedResponse<T> {
   pageSize: number;
   totalPages: number;
 }
-
-// ==================== FILTERS ====================
 
 export interface InboxFilters {
   stage?: string;
