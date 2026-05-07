@@ -178,7 +178,8 @@ export async function GET(req: NextRequest) {
 
     // ============================================
     // 5. SÉRIE TEMPORAL DE MENSAGENS
-    // Agrupa por DIA EM SALVADOR (não UTC) — UTC bagunça meia-noite
+    // Agrupa por DIA EM SALVADOR usando Intl (não UTC).
+    // Garante todos os dias do período (zera os sem dados).
     // ============================================
     const { data: msgsDiarias } = await client
       .from('tatiane_chat_histories')
@@ -186,12 +187,27 @@ export async function GET(req: NextRequest) {
       .gte('created_at', limite)
       .order('created_at', { ascending: true });
 
-    // Helper: converte timestamp UTC pra YYYY-MM-DD em Salvador
-    const dataSalvador = (ts: string): string => {
-      const d = new Date(ts);
-      // Salvador é UTC-3 fixo (sem horário de verão)
-      const salvador = new Date(d.getTime() - 3 * 60 * 60 * 1000);
-      return salvador.toISOString().slice(0, 10);
+    // Normaliza timestamp Postgres pra ISO válido (Postgres usa "+00" sem ":00")
+    const normalizarTimestamp = (ts: string): string => {
+      let s = String(ts);
+      if (s.includes(' ') && !s.includes('T')) s = s.replace(' ', 'T');
+      if (/[+-]\d{2}$/.test(s)) s = s + ':00';                   // "+00" -> "+00:00"
+      if (!/[+-]\d{2}:?\d{0,2}$|Z$/.test(s)) s = s + 'Z';        // sem TZ -> assume UTC
+      return s;
+    };
+
+    // Helper robusto: converte timestamp pra YYYY-MM-DD em Salvador via Intl
+    const dataSalvador = (input: string | Date): string => {
+      const d = typeof input === 'string' ? new Date(normalizarTimestamp(input)) : input;
+      if (isNaN(d.getTime())) return '0000-00-00';
+      const partes = new Intl.DateTimeFormat('en-CA', {
+        timeZone: 'America/Bahia',
+        year: 'numeric', month: '2-digit', day: '2-digit',
+      }).formatToParts(d);
+      const ano = partes.find(p => p.type === 'year')?.value;
+      const mes = partes.find(p => p.type === 'month')?.value;
+      const dia = partes.find(p => p.type === 'day')?.value;
+      return `${ano}-${mes}-${dia}`;
     };
 
     const porDia = new Map<string, { ia: number; humanas: number }>();
@@ -203,13 +219,15 @@ export async function GET(req: NextRequest) {
       else stats.ia++;
     });
 
-    // Preencher dias sem dados (zera) pra gráfico ficar completo
-    const hojeSalvador = dataSalvador(new Date().toISOString());
-    const inicioSalvador = dataSalvador(new Date(limiteMs).toISOString());
+    // Gera array de dias YYYY-MM-DD desde "limite" até hoje (Salvador)
+    // Vai do dia mais antigo ao dia atual, em Salvador.
+    const hojeSalvadorStr = dataSalvador(new Date());
+    const inicioSalvadorStr = dataSalvador(new Date(limiteMs));
     const dias_arr: string[] = [];
-    let cursor = new Date(inicioSalvador + 'T12:00:00.000Z');
-    const fim = new Date(hojeSalvador + 'T12:00:00.000Z');
-    while (cursor <= fim) {
+    // Usa Date em UTC só pra incrementar dia (com hora 12:00 evita TZ borda)
+    const cursor = new Date(inicioSalvadorStr + 'T12:00:00Z');
+    const fim = new Date(hojeSalvadorStr + 'T12:00:00Z');
+    while (cursor.getTime() <= fim.getTime()) {
       dias_arr.push(cursor.toISOString().slice(0, 10));
       cursor.setUTCDate(cursor.getUTCDate() + 1);
     }
