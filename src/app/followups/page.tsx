@@ -228,7 +228,10 @@ function FollowupsContent() {
 
   // Formatar data
   const formatarData = (data: string) => {
-    return format(new Date(data + 'T12:00:00'), "dd 'de' MMM", { locale: ptBR });
+    if (!data) return '';
+    // Se vem só YYYY-MM-DD, adiciona meio-dia. Se já é timestamp completo, usa direto.
+    const value = data.length === 10 ? data + 'T12:00:00' : data;
+    return safeFormat(value, "dd 'de' MMM", { locale: ptBR });
   };
 
   // Badge de situação
