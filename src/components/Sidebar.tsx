@@ -4,12 +4,13 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useAuth } from '@/lib/hooks';
 import {
-  MessageCircle, LayoutGrid, LogOut, User, Menu, X, BarChart3, Clock, ClipboardList,
+  MessageCircle, LayoutGrid, LogOut, User, Menu, X, BarChart3, Clock, ClipboardList, Activity,
 } from 'lucide-react';
 import { useState } from 'react';
 import clsx from 'clsx';
 
 const navItems = [
+  { href: '/dashboard', label: 'Dashboard', icon: Activity },
   { href: '/kanban', label: 'Kanban', icon: LayoutGrid },
   { href: '/followups', label: 'Follow-ups', icon: Clock },
   { href: '/leads-nao-iniciados', label: 'Cadastros', icon: ClipboardList },
