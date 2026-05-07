@@ -8,11 +8,9 @@ import {
   Activity,
   AlertCircle,
   AlertTriangle,
-  ArrowRight,
   Bot,
   CheckCircle2,
   Clock,
-  Info,
   Loader2,
   MessageSquare,
   RefreshCw,
@@ -73,19 +71,20 @@ interface DadosPeriodo {
   serie_temporal_msgs: Array<{ dia: string; ia: number; humanas: number }>;
 }
 
-interface Alerta {
+interface StatusComponente {
   id: string;
-  severidade: 'critico' | 'aviso' | 'info';
-  titulo: string;
+  nome: string;
   descricao: string;
-  valor?: string | number;
-  link?: string;
+  status: 'ok' | 'atencao' | 'critico' | 'fora_janela';
+  minutos_desde: number | null;
+  ultima_atividade: string | null;
+  label_atividade: string;
 }
 
-interface DadosAlertas {
-  alertas: Alerta[];
-  total: number;
-  por_severidade: { critico: number; aviso: number; info: number };
+interface DadosStatus {
+  timestamp: string;
+  dentro_janela: boolean;
+  componentes: StatusComponente[];
 }
 
 // ============================================
@@ -96,7 +95,7 @@ function DashboardContent() {
   const { fetchApi } = useApi();
   const [hoje, setHoje] = useState<DadosHoje | null>(null);
   const [periodo, setPeriodo] = useState<DadosPeriodo | null>(null);
-  const [alertas, setAlertas] = useState<DadosAlertas | null>(null);
+  const [statusOp, setStatusOp] = useState<DadosStatus | null>(null);
   const [diasFiltro, setDiasFiltro] = useState<7 | 30 | 90>(7);
   const [carregando, setCarregando] = useState(true);
   const [recarregando, setRecarregando] = useState(false);
@@ -106,16 +105,16 @@ function DashboardContent() {
     setRecarregando(true);
     setErro(null);
 
-    const [respHoje, respPeriodo, respAlertas] = await Promise.all([
+    const [respHoje, respPeriodo, respStatus] = await Promise.all([
       fetchApi<{ success: boolean; data: DadosHoje }>('/api/dashboard/hoje'),
       fetchApi<{ success: boolean; data: DadosPeriodo }>(`/api/dashboard/periodo?dias=${diasFiltro}`),
-      fetchApi<{ success: boolean; data: DadosAlertas }>('/api/dashboard/alertas'),
+      fetchApi<{ success: boolean; data: DadosStatus }>('/api/dashboard/alertas'),
     ]);
 
     if (respHoje.error) setErro(respHoje.error);
     if (respHoje.data?.success) setHoje(respHoje.data.data);
     if (respPeriodo.data?.success) setPeriodo(respPeriodo.data.data);
-    if (respAlertas.data?.success) setAlertas(respAlertas.data.data);
+    if (respStatus.data?.success) setStatusOp(respStatus.data.data);
 
     setCarregando(false);
     setRecarregando(false);
@@ -165,33 +164,20 @@ function DashboardContent() {
         </div>
       )}
 
-      {/* ================== ALERTAS (no topo) ================== */}
-      {alertas && alertas.alertas.length > 0 && (
+      {/* ================== STATUS OPERACIONAL (3 componentes) ================== */}
+      {statusOp && (
         <div className="mb-6">
           <div className="flex items-center justify-between mb-3">
             <h2 className="text-lg font-semibold text-gray-900 flex items-center gap-2">
-              <AlertTriangle className="w-5 h-5 text-amber-500" />
-              Alertas
-              <span className="text-xs font-normal text-gray-500">
-                {alertas.por_severidade.critico} críticos •{' '}
-                {alertas.por_severidade.aviso} avisos •{' '}
-                {alertas.por_severidade.info} info
-              </span>
+              <Activity className="w-5 h-5 text-purple-600" />
+              Status operacional
             </h2>
           </div>
-          <div className="space-y-2">
-            {alertas.alertas.map((a) => (
-              <AlertaCard key={a.id} alerta={a} onClick={() => a.link && router.push(a.link)} />
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+            {statusOp.componentes.map((c) => (
+              <StatusComponenteCard key={c.id} componente={c} />
             ))}
           </div>
-        </div>
-      )}
-
-      {alertas && alertas.alertas.length === 0 && (
-        <div className="mb-6 p-4 bg-green-50 border border-green-200 rounded-lg flex items-center gap-2 text-green-700">
-          <CheckCircle2 className="w-5 h-5" />
-          <span className="font-medium">Tudo operando bem.</span>
-          <span className="text-sm text-green-600">Nenhum alerta detectado.</span>
         </div>
       )}
 
@@ -387,40 +373,78 @@ function KpiCard({
 }
 
 // ============================================
-// ALERTA CARD
+// STATUS COMPONENTE CARD
 // ============================================
-function AlertaCard({ alerta, onClick }: { alerta: Alerta; onClick?: () => void }) {
-  const cores = {
-    critico: { bg: 'bg-red-50', border: 'border-red-200', text: 'text-red-900', icon: 'text-red-600' },
-    aviso: { bg: 'bg-amber-50', border: 'border-amber-200', text: 'text-amber-900', icon: 'text-amber-600' },
-    info: { bg: 'bg-blue-50', border: 'border-blue-200', text: 'text-blue-900', icon: 'text-blue-600' },
+function StatusComponenteCard({ componente }: { componente: StatusComponente }) {
+  const estilos = {
+    ok: {
+      bg: 'bg-green-50',
+      border: 'border-green-200',
+      icon: 'bg-green-100 text-green-700',
+      label: 'text-green-700',
+      labelText: 'Operando normalmente',
+    },
+    atencao: {
+      bg: 'bg-amber-50',
+      border: 'border-amber-200',
+      icon: 'bg-amber-100 text-amber-700',
+      label: 'text-amber-700',
+      labelText: 'Atenção',
+    },
+    critico: {
+      bg: 'bg-red-50',
+      border: 'border-red-200',
+      icon: 'bg-red-100 text-red-700',
+      label: 'text-red-700',
+      labelText: 'Crítico — verificar',
+    },
+    fora_janela: {
+      bg: 'bg-gray-50',
+      border: 'border-gray-200',
+      icon: 'bg-gray-100 text-gray-500',
+      label: 'text-gray-500',
+      labelText: 'Fora do horário operacional',
+    },
   };
-  const c = cores[alerta.severidade];
-  const Icon = alerta.severidade === 'critico' ? AlertCircle : alerta.severidade === 'aviso' ? AlertTriangle : Info;
+  const e = estilos[componente.status];
+  const Icon = componente.status === 'ok'
+    ? CheckCircle2
+    : componente.status === 'fora_janela'
+      ? Clock
+      : componente.status === 'atencao'
+        ? AlertTriangle
+        : AlertCircle;
+
+  // Texto humano da última atividade
+  let labelTempo = '—';
+  if (componente.minutos_desde !== null) {
+    if (componente.minutos_desde < 1) labelTempo = 'agora mesmo';
+    else if (componente.minutos_desde < 60) labelTempo = `há ${componente.minutos_desde} min`;
+    else if (componente.minutos_desde < 1440) labelTempo = `há ${Math.floor(componente.minutos_desde / 60)}h ${componente.minutos_desde % 60}min`;
+    else labelTempo = `há ${Math.floor(componente.minutos_desde / 1440)}d`;
+  } else if (componente.status === 'fora_janela') {
+    labelTempo = 'Aguardando janela 8h-20h';
+  } else {
+    labelTempo = 'Sem atividade registrada';
+  }
 
   return (
-    <div
-      className={clsx(
-        'p-4 border rounded-lg flex items-start gap-3 transition-shadow',
-        c.bg,
-        c.border,
-        alerta.link && 'hover:shadow-md cursor-pointer'
-      )}
-      onClick={onClick}
-    >
-      <Icon className={clsx('w-5 h-5 flex-shrink-0 mt-0.5', c.icon)} />
-      <div className="flex-1 min-w-0">
-        <div className="flex items-center justify-between gap-2 flex-wrap">
-          <p className={clsx('font-semibold text-sm', c.text)}>{alerta.titulo}</p>
-          {alerta.valor !== undefined && (
-            <span className={clsx('text-xs font-mono px-2 py-0.5 rounded', c.bg, c.text, 'border', c.border)}>
-              {alerta.valor}
-            </span>
-          )}
+    <div className={clsx('p-4 border rounded-lg', e.bg, e.border)}>
+      <div className="flex items-start gap-3">
+        <div className={clsx('w-10 h-10 rounded-lg flex items-center justify-center flex-shrink-0', e.icon)}>
+          <Icon className="w-5 h-5" />
         </div>
-        <p className="text-sm text-gray-700 mt-1">{alerta.descricao}</p>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center justify-between gap-2 mb-0.5">
+            <p className="font-semibold text-sm text-gray-900 truncate">{componente.nome}</p>
+            <span className={clsx('text-xs font-medium', e.label)}>{e.labelText}</span>
+          </div>
+          <p className="text-xs text-gray-600 mb-2">{componente.descricao}</p>
+          <p className="text-xs text-gray-500">
+            <span className="font-medium">{componente.label_atividade}:</span> {labelTempo}
+          </p>
+        </div>
       </div>
-      {alerta.link && <ArrowRight className={clsx('w-4 h-4 mt-1', c.icon)} />}
     </div>
   );
 }
