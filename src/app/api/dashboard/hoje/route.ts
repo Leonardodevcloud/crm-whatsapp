@@ -8,6 +8,20 @@ import { getUserFromHeader } from '@/lib/auth';
 import { supabase, supabaseAdmin } from '@/lib/supabase';
 
 const TZ = 'America/Bahia';
+const BI_API_URL = process.env.BI_API_URL || 'https://tutts-backend-production.up.railway.app';
+const CRM_SERVICE_KEY = process.env.CRM_SERVICE_KEY || '';
+
+// Pega data hoje em Salvador no formato YYYY-MM-DD
+function dataHojeSalvador(): string {
+  const partes = new Intl.DateTimeFormat('en-CA', {
+    timeZone: TZ,
+    year: 'numeric', month: '2-digit', day: '2-digit',
+  }).formatToParts(new Date());
+  const ano = partes.find(p => p.type === 'year')?.value;
+  const mes = partes.find(p => p.type === 'month')?.value;
+  const dia = partes.find(p => p.type === 'day')?.value;
+  return `${ano}-${mes}-${dia}`;
+}
 
 // Helpers de timezone — pegar início e fim do dia em horário Salvador
 function inicioDoDiaSalvadorISO(): string {
@@ -75,16 +89,47 @@ export async function GET(req: NextRequest) {
 
     // ============================================
     // 3. LEADS ATIVADOS HOJE
-    // Usa data_ativacao (campo específico) em vez de updated_at
-    // (updated_at mudaria toda vez que o lead recebe mensagem nova,
-    // gerando contagem incorreta de "ativados hoje")
+    // Puxa diretamente da API Tutts (mesma fonte que o Analytics usa).
+    // O banco interno (data_ativacao em dados_cliente) só é atualizado
+    // pelo cron de enriquecimento, então pode estar atrasado.
+    // A API Tutts é a FONTE DE VERDADE da planilha.
+    //
+    // Fallback: se a API falhar, usa data_ativacao do banco interno.
     // ============================================
-    const { count: leadsAtivadosHoje } = await client
-      .from('dados_cliente')
-      .select('*', { count: 'exact', head: true })
-      .eq('stage', 'finalizado')
-      .gte('data_ativacao', inicioDia)
-      .lt('data_ativacao', fimDia);
+    let leadsAtivadosHoje = 0;
+    const dataHoje = dataHojeSalvador();
+    try {
+      const params = new URLSearchParams();
+      params.set('page', '1');
+      params.set('limit', '50000');
+      const respApi = await fetch(`${BI_API_URL}/api/crm/leads-captura/?${params}`, {
+        headers: {
+          'Content-Type': 'application/json',
+          ...(CRM_SERVICE_KEY ? { 'x-service-key': CRM_SERVICE_KEY } : {}),
+        },
+        signal: AbortSignal.timeout(10000),
+      }).then(r => r.json());
+
+      if (respApi?.success && Array.isArray(respApi.data)) {
+        leadsAtivadosHoje = respApi.data.filter((l: any) => {
+          if (l.status_api !== 'ativo') return false;
+          if (!l.data_ativacao) return false;
+          return l.data_ativacao.split('T')[0] === dataHoje;
+        }).length;
+      } else {
+        throw new Error('API Tutts retornou resposta inválida');
+      }
+    } catch (errApi: any) {
+      console.warn('[dashboard/hoje] API Tutts falhou, usando fallback do banco:', errApi.message);
+      // Fallback: usa data_ativacao do banco interno (pode estar atrasado se cron parou)
+      const { count } = await client
+        .from('dados_cliente')
+        .select('*', { count: 'exact', head: true })
+        .eq('stage', 'finalizado')
+        .gte('data_ativacao', inicioDia)
+        .lt('data_ativacao', fimDia);
+      leadsAtivadosHoje = count || 0;
+    }
 
     // ============================================
     // 4. NOVOS LEADS HOJE
