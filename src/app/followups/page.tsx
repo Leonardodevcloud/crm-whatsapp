@@ -68,14 +68,14 @@ interface WorkerStatus {
   atrasados: number;
   enviados_hoje: number;
   prox_7_dias: number;
-  ultima_rodada: { inicio: string; enviados: number } | null;
+  ultima_rodada: { inicio: string; enviados: number; pulou_janela?: boolean } | null;
   proxima_rodada: string;
   ultimo_envio: string | null;
   enviados_24h: number;
   enviados_7d: number;
   taxa_resposta_7d: { total: number; respondidos: number; taxa_pct: number };
   taxa_resposta_30d: { total: number; respondidos: number; taxa_pct: number };
-  historico_rodadas: Array<{ inicio: string; enviados: number }>;
+  historico_rodadas: Array<{ inicio: string; enviados: number; pulou_janela?: boolean; falhas?: number }>;
   schedule: string;
 }
 
@@ -363,19 +363,42 @@ function FollowupsContent() {
                   Últimas {workerStatus.historico_rodadas.length} rodadas
                 </p>
                 <div className="flex flex-wrap gap-2">
-                  {workerStatus.historico_rodadas.map((r, i) => (
-                    <div
-                      key={i}
-                      className={clsx(
-                        'flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs',
-                        i === 0 ? 'bg-purple-100 text-purple-900 font-semibold' : 'bg-gray-100 text-gray-700'
-                      )}
-                    >
-                      <span className="font-mono">{safeFormatTime(r.inicio)}</span>
-                      <span className="text-gray-400">·</span>
-                      <span>{r.enviados} enviados</span>
-                    </div>
-                  ))}
+                  {workerStatus.historico_rodadas.map((r, i) => {
+                    const isFirst = i === 0;
+                    const isJanela = r.pulou_janela;
+                    const isVazia = !isJanela && r.enviados === 0;
+                    const isErro = !isJanela && (r.falhas || 0) > 0;
+
+                    let estilo = 'bg-gray-100 text-gray-700';
+                    let label = `${r.enviados} env`;
+
+                    if (isJanela) {
+                      estilo = 'bg-amber-50 text-amber-700 border border-amber-200';
+                      label = 'fora janela';
+                    } else if (isErro) {
+                      estilo = 'bg-red-50 text-red-700 border border-red-200';
+                      label = `${r.enviados} env · ${r.falhas} falha${(r.falhas || 0) > 1 ? 's' : ''}`;
+                    } else if (isVazia) {
+                      estilo = 'bg-gray-50 text-gray-400 border border-gray-200';
+                      label = '0 env';
+                    } else if (isFirst) {
+                      estilo = 'bg-purple-100 text-purple-900 font-semibold border border-purple-200';
+                    }
+
+                    return (
+                      <div
+                        key={i}
+                        className={clsx(
+                          'flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs',
+                          estilo
+                        )}
+                      >
+                        <span className="font-mono">{safeFormatTime(r.inicio)}</span>
+                        <span className="opacity-50">·</span>
+                        <span>{label}</span>
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
             )}
