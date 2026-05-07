@@ -23,9 +23,44 @@ import {
   MessageCircle,
   ChevronRight,
   Zap,
+  Sparkles,
+  Eye,
 } from 'lucide-react';
 import { format, formatDistanceToNow } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
+
+// Helpers seguros para datas — protegem contra Invalid Date no SSR
+function parseDateSafe(value: any): Date | null {
+  if (!value) return null;
+  if (value instanceof Date) return isNaN(value.getTime()) ? null : value;
+  let s = String(value);
+  // PostgreSQL às vezes retorna "2026-04-22 19:43:01.377" (sem T/Z)
+  if (s.includes(' ') && !s.includes('T')) {
+    s = s.replace(' ', 'T');
+  }
+  const d = new Date(s);
+  return isNaN(d.getTime()) ? null : d;
+}
+
+function safeFormat(value: any, pattern: string, options?: any): string {
+  const d = parseDateSafe(value);
+  if (!d) return '';
+  try {
+    return format(d, pattern, options);
+  } catch {
+    return '';
+  }
+}
+
+function safeFormatDistanceToNow(value: any, options?: any): string {
+  const d = parseDateSafe(value);
+  if (!d) return '';
+  try {
+    return formatDistanceToNow(d, options);
+  } catch {
+    return '';
+  }
+}
 import clsx from 'clsx';
 
 interface Followup {
@@ -55,13 +90,40 @@ interface Contagem {
   total: number;
 }
 
+interface Metrics {
+  enviados: { ultimas_24h: number; ultimos_7d: number; ultimos_30d: number };
+  pendentes: { atrasados: number; total: number };
+  taxa_resposta: { ultimos_7d: number; ultimos_30d: number; respondidos_7d: number; respondidos_30d: number };
+  ultimo_envio: string | null;
+}
+
+interface MensagemDetalhe {
+  followup_id: number;
+  lead_id: number;
+  nome_lead: string | null;
+  telefone: string | null;
+  stage_atual: string | null;
+  tipo: string;
+  sequencia: number;
+  motivo: string;
+  enviado_em: string;
+  mensagem_enviada: string | null;
+  mensagem_planejada: string | null;
+  respondeu: boolean;
+  respondeu_em: string | null;
+  tempo_resposta_horas: number | null;
+}
+
 function FollowupsContent() {
   const [followups, setFollowups] = useState<Followup[]>([]);
   const [contagem, setContagem] = useState<Contagem>({ atrasados: 0, hoje: 0, futuro: 0, total: 0 });
+  const [metrics, setMetrics] = useState<Metrics | null>(null);
+  const [mensagemModal, setMensagemModal] = useState<MensagemDetalhe | null>(null);
+  const [loadingMensagem, setLoadingMensagem] = useState<number | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [filtro, setFiltro] = useState<'todos' | 'atrasado' | 'hoje' | 'futuro'>('todos');
+  const [filtro, setFiltro] = useState<'todos' | 'atrasado' | 'hoje' | 'futuro' | 'concluido'>('todos');
 
   const { fetchApi } = useApi();
   const router = useRouter();
@@ -72,7 +134,9 @@ function FollowupsContent() {
     setError(null);
 
     const params = new URLSearchParams();
-    if (filtro !== 'todos') {
+    if (filtro === 'concluido') {
+      params.set('status', 'concluido');
+    } else if (filtro !== 'todos') {
       params.set('situacao', filtro);
     }
 
@@ -93,10 +157,37 @@ function FollowupsContent() {
     setIsRefreshing(false);
   }, [fetchApi, filtro]);
 
+  // Carregar métricas (em paralelo, não bloqueante)
+  const loadMetrics = useCallback(async () => {
+    const { data: response } = await fetchApi<{
+      success: boolean;
+      data: Metrics;
+    }>('/api/followups/metrics');
+    if (response?.success) {
+      setMetrics(response.data);
+    }
+  }, [fetchApi]);
+
+  // Abrir modal com mensagem do follow-up
+  const verMensagem = async (followupId: number) => {
+    setLoadingMensagem(followupId);
+    const { data: response, error } = await fetchApi<{
+      success: boolean;
+      data: MensagemDetalhe;
+    }>(`/api/followups/${followupId}/mensagem`);
+    setLoadingMensagem(null);
+    if (error) {
+      setError(error);
+    } else if (response?.success) {
+      setMensagemModal(response.data);
+    }
+  };
+
   // Carregar ao montar
   useEffect(() => {
     loadFollowups();
-  }, [loadFollowups]);
+    loadMetrics();
+  }, [loadFollowups, loadMetrics]);
 
   // Concluir follow-up
   const concluirFollowup = async (id: number) => {
@@ -109,6 +200,7 @@ function FollowupsContent() {
       setError(error);
     } else {
       loadFollowups();
+      loadMetrics();
     }
   };
 
@@ -125,6 +217,7 @@ function FollowupsContent() {
       setError(error);
     } else {
       loadFollowups();
+      loadMetrics();
     }
   };
 
@@ -133,29 +226,9 @@ function FollowupsContent() {
     router.push(`/chat/${leadId}`);
   };
 
-  // Formatar data — robusta contra Invalid Date
-  // tatiane_followups.data_agendada é timestamptz, mas pode vir em vários formatos
+  // Formatar data
   const formatarData = (data: string) => {
-    if (!data) return '';
-    let s = String(data);
-    // Se for só "YYYY-MM-DD", adicionar hora pra ficar no meio do dia (evita rolar p/ ontem por timezone)
-    if (/^\d{4}-\d{2}-\d{2}$/.test(s)) {
-      s = s + 'T12:00:00';
-    } else if (s.includes(' ') && !s.includes('T')) {
-      // "2026-04-25 15:30:00.123+00" → "2026-04-25T15:30:00.123+00"
-      s = s.replace(' ', 'T');
-    }
-    // Se ficou sem timezone, assume UTC
-    if (s.includes('T') && !/[Zz]|[+-]\d{2}:?\d{2}$/.test(s)) {
-      s = s + 'Z';
-    }
-    const d = new Date(s);
-    if (isNaN(d.getTime())) return '';
-    try {
-      return format(d, "dd 'de' MMM", { locale: ptBR });
-    } catch {
-      return '';
-    }
+    return format(new Date(data + 'T12:00:00'), "dd 'de' MMM", { locale: ptBR });
   };
 
   // Badge de situação
@@ -227,8 +300,53 @@ function FollowupsContent() {
         </div>
       )}
 
+      {/* Métricas Tatiane (inteligência artificial enviando follow-ups) */}
+      {metrics && (
+        <div className="card mb-6 p-4 bg-gradient-to-r from-purple-50 to-blue-50 border-purple-200">
+          <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center gap-2">
+              <Sparkles className="w-5 h-5 text-purple-600" />
+              <h3 className="font-semibold text-gray-900">Tatiane IA — Follow-ups automáticos</h3>
+            </div>
+            {metrics.ultimo_envio && (
+              <span className="text-xs text-gray-600">
+                Último envio: {safeFormatDistanceToNow(metrics.ultimo_envio, { locale: ptBR, addSuffix: true })}
+              </span>
+            )}
+          </div>
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+            <div>
+              <p className="text-xs text-gray-600 uppercase tracking-wide">Enviados 24h</p>
+              <p className="text-2xl font-bold text-purple-700">{metrics.enviados.ultimas_24h}</p>
+            </div>
+            <div>
+              <p className="text-xs text-gray-600 uppercase tracking-wide">Enviados 7 dias</p>
+              <p className="text-2xl font-bold text-purple-700">{metrics.enviados.ultimos_7d}</p>
+            </div>
+            <div>
+              <p className="text-xs text-gray-600 uppercase tracking-wide">Taxa resposta 7d</p>
+              <p className="text-2xl font-bold text-blue-700">
+                {metrics.taxa_resposta.ultimos_7d}%
+                <span className="text-xs font-normal text-gray-500 ml-1">
+                  ({metrics.taxa_resposta.respondidos_7d} respostas)
+                </span>
+              </p>
+            </div>
+            <div>
+              <p className="text-xs text-gray-600 uppercase tracking-wide">Taxa resposta 30d</p>
+              <p className="text-2xl font-bold text-blue-700">
+                {metrics.taxa_resposta.ultimos_30d}%
+                <span className="text-xs font-normal text-gray-500 ml-1">
+                  ({metrics.taxa_resposta.respondidos_30d} de {metrics.enviados.ultimos_30d})
+                </span>
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Cards de contagem */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+      <div className="grid grid-cols-2 lg:grid-cols-5 gap-4 mb-6">
         <button
           onClick={() => setFiltro('atrasado')}
           className={clsx(
@@ -296,7 +414,25 @@ function FollowupsContent() {
             </div>
             <div>
               <p className="text-2xl font-bold text-gray-600">{contagem.total}</p>
-              <p className="text-sm text-gray-500">Total</p>
+              <p className="text-sm text-gray-500">Pendentes</p>
+            </div>
+          </div>
+        </button>
+
+        <button
+          onClick={() => setFiltro('concluido')}
+          className={clsx(
+            'card p-4 text-left transition-all',
+            filtro === 'concluido' ? 'ring-2 ring-green-500' : 'hover:shadow-md'
+          )}
+        >
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 bg-green-100 rounded-xl flex items-center justify-center">
+              <CheckCircle className="w-5 h-5 text-green-600" />
+            </div>
+            <div>
+              <p className="text-2xl font-bold text-green-600">{metrics?.enviados.ultimos_7d ?? '—'}</p>
+              <p className="text-sm text-gray-500">Concluídos 7d</p>
             </div>
           </div>
         </button>
@@ -390,20 +526,39 @@ function FollowupsContent() {
                   >
                     <MessageCircle className="w-5 h-5" />
                   </button>
-                  <button
-                    onClick={() => concluirFollowup(followup.id)}
-                    className="p-2 text-green-600 hover:bg-green-50 rounded-lg transition-colors"
-                    title="Concluir"
-                  >
-                    <CheckCircle className="w-5 h-5" />
-                  </button>
-                  <button
-                    onClick={() => cancelarFollowup(followup.id)}
-                    className="p-2 text-red-600 hover:bg-red-50 rounded-lg transition-colors"
-                    title="Cancelar"
-                  >
-                    <XCircle className="w-5 h-5" />
-                  </button>
+
+                  {followup.status === 'concluido' ? (
+                    <button
+                      onClick={() => verMensagem(followup.id)}
+                      disabled={loadingMensagem === followup.id}
+                      className="p-2 text-purple-600 hover:bg-purple-50 rounded-lg transition-colors disabled:opacity-50"
+                      title="Ver mensagem enviada"
+                    >
+                      {loadingMensagem === followup.id ? (
+                        <Loader2 className="w-5 h-5 animate-spin" />
+                      ) : (
+                        <Eye className="w-5 h-5" />
+                      )}
+                    </button>
+                  ) : (
+                    <>
+                      <button
+                        onClick={() => concluirFollowup(followup.id)}
+                        className="p-2 text-green-600 hover:bg-green-50 rounded-lg transition-colors"
+                        title="Concluir"
+                      >
+                        <CheckCircle className="w-5 h-5" />
+                      </button>
+                      <button
+                        onClick={() => cancelarFollowup(followup.id)}
+                        className="p-2 text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+                        title="Cancelar"
+                      >
+                        <XCircle className="w-5 h-5" />
+                      </button>
+                    </>
+                  )}
+
                   <button
                     onClick={() => abrirChat(followup.lead_id)}
                     className="p-2 text-gray-400 hover:bg-gray-100 rounded-lg transition-colors"
@@ -416,6 +571,107 @@ function FollowupsContent() {
           ))
         )}
       </div>
+
+      {/* Modal de visualização da mensagem */}
+      {mensagemModal && (
+        <div
+          className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"
+          onClick={() => setMensagemModal(null)}
+        >
+          <div
+            className="bg-white rounded-xl max-w-lg w-full p-6 shadow-xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-semibold text-gray-900 flex items-center gap-2">
+                <Sparkles className="w-5 h-5 text-purple-600" />
+                Mensagem enviada pela Tatiane
+              </h3>
+              <button
+                onClick={() => setMensagemModal(null)}
+                className="p-1 hover:bg-gray-100 rounded"
+              >
+                <XCircle className="w-5 h-5 text-gray-400" />
+              </button>
+            </div>
+
+            <div className="space-y-4">
+              {/* Lead */}
+              <div className="bg-gray-50 rounded-lg p-3">
+                <p className="text-xs text-gray-500 uppercase tracking-wide">Lead</p>
+                <p className="font-medium text-gray-900">{mensagemModal.nome_lead || 'Sem nome'}</p>
+                <p className="text-sm text-gray-600">{mensagemModal.telefone}</p>
+                <p className="text-xs text-gray-500 mt-1">
+                  Stage atual: <span className="font-medium">{mensagemModal.stage_atual}</span>
+                </p>
+              </div>
+
+              {/* Motivo */}
+              <div>
+                <p className="text-xs text-gray-500 uppercase tracking-wide mb-1">Motivo</p>
+                <p className="text-sm text-gray-700">{mensagemModal.motivo}</p>
+                <p className="text-xs text-gray-500 mt-1">
+                  Tipo: {mensagemModal.tipo}
+                  {mensagemModal.sequencia > 1 && ` • ${mensagemModal.sequencia}ª tentativa`}
+                </p>
+              </div>
+
+              {/* Mensagem */}
+              <div>
+                <p className="text-xs text-gray-500 uppercase tracking-wide mb-1">
+                  Enviada {safeFormatDistanceToNow(mensagemModal.enviado_em, { locale: ptBR, addSuffix: true })}
+                </p>
+                <div className="bg-purple-50 border-l-4 border-purple-400 rounded p-3">
+                  <p className="text-sm text-gray-800 whitespace-pre-wrap">
+                    {mensagemModal.mensagem_enviada || mensagemModal.mensagem_planejada || (
+                      <em className="text-gray-400">Mensagem não disponível no histórico</em>
+                    )}
+                  </p>
+                </div>
+              </div>
+
+              {/* Resposta */}
+              <div>
+                <p className="text-xs text-gray-500 uppercase tracking-wide mb-1">Resposta do lead</p>
+                {mensagemModal.respondeu ? (
+                  <div className="bg-green-50 border-l-4 border-green-400 rounded p-3 text-sm">
+                    <p className="text-green-800 font-medium">
+                      ✓ Lead respondeu em {mensagemModal.tempo_resposta_horas}h
+                    </p>
+                    <p className="text-xs text-green-600 mt-1">
+                      {mensagemModal.respondeu_em && safeFormat(mensagemModal.respondeu_em, "dd/MM 'às' HH:mm", { locale: ptBR })}
+                    </p>
+                  </div>
+                ) : (
+                  <div className="bg-gray-50 border-l-4 border-gray-300 rounded p-3 text-sm">
+                    <p className="text-gray-600">Sem resposta nas primeiras 48h</p>
+                  </div>
+                )}
+              </div>
+
+              {/* Ações */}
+              <div className="pt-2 flex gap-2">
+                <button
+                  onClick={() => {
+                    abrirChat(mensagemModal.lead_id);
+                    setMensagemModal(null);
+                  }}
+                  className="btn-primary flex-1 flex items-center justify-center gap-2"
+                >
+                  <MessageCircle className="w-4 h-4" />
+                  Abrir conversa
+                </button>
+                <button
+                  onClick={() => setMensagemModal(null)}
+                  className="btn-secondary"
+                >
+                  Fechar
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
