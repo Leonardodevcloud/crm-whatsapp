@@ -206,9 +206,21 @@ function FollowupsContent() {
     router.push(`/chat/${leadId}`);
   };
 
-  // Formatar data
+  // Formatar data (safe: retorna '—' se inválida)
   const formatarData = (data: string) => {
-    return format(new Date(data + 'T12:00:00'), "dd 'de' MMM", { locale: ptBR });
+    if (!data) return '—';
+    try {
+      const d = parseDateSafe(data);
+      if (!d) {
+        // Tenta o formato YYYY-MM-DD adicionando hora
+        const d2 = new Date(data + 'T12:00:00');
+        if (isNaN(d2.getTime())) return '—';
+        return format(d2, "dd 'de' MMM", { locale: ptBR });
+      }
+      return format(d, "dd 'de' MMM", { locale: ptBR });
+    } catch {
+      return '—';
+    }
   };
 
   // Badge de situação
