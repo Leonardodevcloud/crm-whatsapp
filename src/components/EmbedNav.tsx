@@ -3,10 +3,11 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useAuth } from '@/lib/hooks';
-import { Columns3, ArrowLeft, BarChart3, Clock, ClipboardList, UserPlus } from 'lucide-react';
+import { Columns3, ArrowLeft, BarChart3, Clock, ClipboardList, UserPlus, Activity } from 'lucide-react';
 import clsx from 'clsx';
 
 const NAV_ITEMS = [
+  { href: '/dashboard', label: 'Dashboard', icon: Activity },
   { href: '/analytics', label: 'Analytics', icon: BarChart3 },
   { href: '/kanban', label: 'Kanban', icon: Columns3 },
   { href: '/followups', label: 'Follow-ups', icon: Clock },
