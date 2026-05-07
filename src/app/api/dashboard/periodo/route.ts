@@ -1,11 +1,20 @@
 // ===========================================
 // API: /api/dashboard/periodo?dias=7|30|90
-// GET: Métricas históricas (funnel, conversão, tempo médio, taxa resposta)
+// GET: Métricas históricas — usa API Tutts como fonte de verdade
+//
+// Fonte:
+//   - Cadastros e Ativados → API Tutts (mesma do Analytics)
+//   - Tempo médio até ativar → calculado da API Tutts (data_cadastro vs data_ativacao)
+//   - Follow-ups + taxa resposta → tatiane_followups + tatiane_chat_histories (banco interno)
+//   - Série temporal de mensagens → tatiane_chat_histories (banco interno)
 // ===========================================
 
 import { NextRequest, NextResponse } from 'next/server';
 import { getUserFromHeader } from '@/lib/auth';
 import { supabase, supabaseAdmin } from '@/lib/supabase';
+
+const BI_API_URL = process.env.BI_API_URL || 'https://tutts-backend-production.up.railway.app';
+const CRM_SERVICE_KEY = process.env.CRM_SERVICE_KEY || '';
 
 export async function GET(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
@@ -22,72 +31,103 @@ export async function GET(req: NextRequest) {
     const client = supabaseAdmin || supabase;
     const limiteMs = Date.now() - dias * 24 * 60 * 60 * 1000;
     const limite = new Date(limiteMs).toISOString();
+    const limiteDataStr = new Date(limiteMs).toISOString().slice(0, 10);
+    const hojeStr = new Date().toISOString().slice(0, 10);
 
     // ============================================
-    // 1. FUNNEL — leads CRIADOS no período por stage atual
-    // (vê quantos viraram cada coisa)
+    // 1. PUXAR DADOS DA API TUTTS (fonte de verdade)
     // ============================================
-    const { data: leadsPeriodo } = await client
-      .from('dados_cliente')
-      .select('id, stage, status, created_at, data_ativacao')
-      .gte('created_at', limite);
+    let totalCadastrosNoPeriodo = 0;
+    let totalAtivadosNoPeriodo = 0;
+    let temposAtivar: number[] = [];
 
-    const leads = leadsPeriodo || [];
-    const totalNovos = leads.length;
+    try {
+      const params = new URLSearchParams();
+      params.set('page', '1');
+      params.set('limit', '50000');
+      const respApi = await fetch(`${BI_API_URL}/api/crm/leads-captura/?${params}`, {
+        headers: {
+          'Content-Type': 'application/json',
+          ...(CRM_SERVICE_KEY ? { 'x-service-key': CRM_SERVICE_KEY } : {}),
+        },
+        signal: AbortSignal.timeout(15000),
+      }).then(r => r.json());
 
-    // Conta leads que passaram por cada estágio (via stage atual + ressuscitação)
-    // Como não temos histórico de stage, usamos estado atual
-    const stageCount = {
-      novo: 0,
-      qualificado: 0,
-      finalizado: 0,
-      lead_morto: 0,
-    };
+      if (respApi?.success && Array.isArray(respApi.data)) {
+        const leadsTutts = respApi.data;
 
-    leads.forEach((l: any) => {
-      const stage = l.stage || 'novo';
-      if (stage === 'em_atendimento' || stage === 'proposta') {
-        stageCount.novo++;
-      } else if (stage in stageCount) {
-        stageCount[stage as keyof typeof stageCount]++;
-      } else {
-        stageCount.novo++;
+        // Cadastros no período (data_cadastro >= limite)
+        totalCadastrosNoPeriodo = leadsTutts.filter((l: any) => {
+          if (!l.data_cadastro) return false;
+          return l.data_cadastro.split('T')[0] >= limiteDataStr;
+        }).length;
+
+        // Ativados no período (status_api='ativo' AND data_ativacao >= limite)
+        const ativadosNoPeriodo = leadsTutts.filter((l: any) => {
+          if (l.status_api !== 'ativo') return false;
+          if (!l.data_ativacao) return false;
+          return l.data_ativacao.split('T')[0] >= limiteDataStr;
+        });
+        totalAtivadosNoPeriodo = ativadosNoPeriodo.length;
+
+        // Tempo médio até ativar — para cada lead ATIVADO no período,
+        // calcula diferença entre data_ativacao e data_cadastro
+        ativadosNoPeriodo.forEach((l: any) => {
+          if (l.data_cadastro && l.data_ativacao) {
+            const cad = new Date(l.data_cadastro).getTime();
+            const atv = new Date(l.data_ativacao).getTime();
+            if (atv >= cad) {
+              const dias = (atv - cad) / (1000 * 60 * 60 * 24);
+              temposAtivar.push(dias);
+            }
+          }
+        });
       }
-    });
-
-    // Funnel acumulativo: ativados ⊆ qualificados ⊆ novos
-    // (lead que está finalizado, passou por qualificado antes)
-    const funnelTotal = {
-      novos: totalNovos,
-      qualificados: stageCount.qualificado + stageCount.finalizado,
-      finalizados: stageCount.finalizado,
-      mortos: stageCount.lead_morto,
-    };
+    } catch (errApi: any) {
+      console.warn('[dashboard/periodo] API Tutts falhou, usando fallback do banco:', errApi.message);
+      // Fallback: usa banco interno
+      const { data: leadsBanco } = await client
+        .from('dados_cliente')
+        .select('id, stage, status, created_at, data_ativacao')
+        .gte('created_at', limite);
+      const lb = leadsBanco || [];
+      totalCadastrosNoPeriodo = lb.length;
+      const ativadosFallback = lb.filter((l: any) => l.stage === 'finalizado' && l.data_ativacao);
+      totalAtivadosNoPeriodo = ativadosFallback.length;
+      ativadosFallback.forEach((l: any) => {
+        if (l.created_at && l.data_ativacao) {
+          const cad = new Date(l.created_at).getTime();
+          const atv = new Date(l.data_ativacao).getTime();
+          if (atv >= cad) {
+            temposAtivar.push((atv - cad) / (1000 * 60 * 60 * 24));
+          }
+        }
+      });
+    }
 
     // ============================================
     // 2. TAXA DE CONVERSÃO LEAD → ATIVADO
     // ============================================
-    const taxaConversao = totalNovos > 0
-      ? Math.round((funnelTotal.finalizados / totalNovos) * 1000) / 10
+    const taxaConversao = totalCadastrosNoPeriodo > 0
+      ? Math.round((totalAtivadosNoPeriodo / totalCadastrosNoPeriodo) * 1000) / 10
       : 0;
 
     // ============================================
-    // 3. TEMPO MÉDIO ATÉ ATIVAR
+    // 3. TEMPO MÉDIO ATÉ ATIVAR (mediana é mais robusta que média)
     // ============================================
-    const tempos: number[] = [];
-    leads.forEach((l: any) => {
-      if (l.stage === 'finalizado' && l.created_at && l.data_ativacao) {
-        const criado = new Date(l.created_at).getTime();
-        const ativado = new Date(l.data_ativacao).getTime();
-        if (ativado > criado) {
-          tempos.push((ativado - criado) / (24 * 60 * 60 * 1000));
-        }
-      }
-    });
+    let tempoMedianaDias: number | null = null;
+    let tempoMedioDias: number | null = null;
+    if (temposAtivar.length > 0) {
+      const ordenado = [...temposAtivar].sort((a, b) => a - b);
+      const meio = Math.floor(ordenado.length / 2);
+      const mediana = ordenado.length % 2 === 0
+        ? (ordenado[meio - 1] + ordenado[meio]) / 2
+        : ordenado[meio];
+      tempoMedianaDias = Math.round(mediana * 10) / 10;
 
-    const tempoMedioDias = tempos.length > 0
-      ? Math.round((tempos.reduce((a, b) => a + b, 0) / tempos.length) * 10) / 10
-      : null;
+      const soma = temposAtivar.reduce((a, b) => a + b, 0);
+      tempoMedioDias = Math.round((soma / temposAtivar.length) * 10) / 10;
+    }
 
     // ============================================
     // 4. TAXA DE RESPOSTA DE FOLLOW-UPS
@@ -137,8 +177,7 @@ export async function GET(req: NextRequest) {
       : 0;
 
     // ============================================
-    // 5. ATIVIDADE GERAL (mensagens, follow-ups por dia)
-    // Pra gráfico de linha temporal
+    // 5. SÉRIE TEMPORAL DE MENSAGENS
     // ============================================
     const { data: msgsDiarias } = await client
       .from('tatiane_chat_histories')
@@ -148,7 +187,7 @@ export async function GET(req: NextRequest) {
 
     const porDia = new Map<string, { ia: number; humanas: number }>();
     (msgsDiarias || []).forEach((m: any) => {
-      const dia = m.created_at.slice(0, 10); // YYYY-MM-DD
+      const dia = m.created_at.slice(0, 10);
       if (!porDia.has(dia)) porDia.set(dia, { ia: 0, humanas: 0 });
       const stats = porDia.get(dia)!;
       if (m.message_type === 'human') stats.humanas++;
@@ -159,35 +198,23 @@ export async function GET(req: NextRequest) {
       .map(([dia, stats]) => ({ dia, ...stats }))
       .sort((a, b) => a.dia.localeCompare(b.dia));
 
-    // ============================================
-    // 6. NOVOS LEADS POR DIA (pra ver tendência)
-    // ============================================
-    const novosPorDia = new Map<string, number>();
-    leads.forEach((l: any) => {
-      if (l.created_at) {
-        const dia = l.created_at.slice(0, 10);
-        novosPorDia.set(dia, (novosPorDia.get(dia) || 0) + 1);
-      }
-    });
-
-    const serieTemporalLeads = Array.from(novosPorDia.entries())
-      .map(([dia, total]) => ({ dia, total }))
-      .sort((a, b) => a.dia.localeCompare(b.dia));
-
     return NextResponse.json({
       success: true,
       data: {
         periodo_dias: dias,
-        funnel: funnelTotal,
+        // KPIs principais (usados pelo dashboard simplificado)
+        total_cadastros: totalCadastrosNoPeriodo,
+        total_ativados: totalAtivadosNoPeriodo,
         taxa_conversao_pct: taxaConversao,
+        tempo_mediana_ativar_dias: tempoMedianaDias,
         tempo_medio_ativar_dias: tempoMedioDias,
+        amostra_tempo_ativar: temposAtivar.length,
         followups: {
           total: totalFollowups,
           respondidos,
           taxa_resposta_pct: taxaRespostaFollowup,
         },
         serie_temporal_msgs: serieTemporalMsgs,
-        serie_temporal_leads: serieTemporalLeads,
       },
     });
   } catch (error: any) {
