@@ -389,79 +389,61 @@ function FollowupsContent() {
       </div>
 
       {/* ═══════════════════════════════════════════════
-          CARDS DE FILTRO (lista da fila)
+          FILTROS DA LISTA (chips compactos)
       ═══════════════════════════════════════════════ */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
-        <button
-          onClick={() => setFiltro('atrasado')}
-          className={clsx(
-            'card p-4 text-left transition-all',
-            filtro === 'atrasado' ? 'ring-2 ring-red-500' : 'hover:shadow-md'
-          )}
-        >
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 bg-red-100 rounded-xl flex items-center justify-center">
-              <AlertCircle className="w-5 h-5 text-red-600" />
-            </div>
-            <div>
-              <p className="text-2xl font-bold text-red-600">{contagem.atrasados}</p>
-              <p className="text-sm text-gray-500">Atrasados</p>
-            </div>
-          </div>
-        </button>
-
-        <button
-          onClick={() => setFiltro('hoje')}
-          className={clsx(
-            'card p-4 text-left transition-all',
-            filtro === 'hoje' ? 'ring-2 ring-yellow-500' : 'hover:shadow-md'
-          )}
-        >
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 bg-yellow-100 rounded-xl flex items-center justify-center">
-              <Clock className="w-5 h-5 text-yellow-600" />
-            </div>
-            <div>
-              <p className="text-2xl font-bold text-yellow-600">{contagem.hoje}</p>
-              <p className="text-sm text-gray-500">Hoje</p>
-            </div>
-          </div>
-        </button>
-
-        <button
-          onClick={() => setFiltro('futuro')}
-          className={clsx(
-            'card p-4 text-left transition-all',
-            filtro === 'futuro' ? 'ring-2 ring-blue-500' : 'hover:shadow-md'
-          )}
-        >
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 bg-blue-100 rounded-xl flex items-center justify-center">
-              <Calendar className="w-5 h-5 text-blue-600" />
-            </div>
-            <div>
-              <p className="text-2xl font-bold text-blue-600">{contagem.futuro}</p>
-              <p className="text-sm text-gray-500">Próximos</p>
-            </div>
-          </div>
-        </button>
-
+      <div className="flex items-center gap-2 mb-4 flex-wrap">
+        <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide mr-1">Filtrar:</span>
         <button
           onClick={() => setFiltro('todos')}
           className={clsx(
-            'card p-4 text-left transition-all',
-            filtro === 'todos' ? 'ring-2 ring-gray-500' : 'hover:shadow-md'
+            'inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium transition-all',
+            filtro === 'todos'
+              ? 'bg-gray-900 text-white'
+              : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
           )}
         >
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 bg-gray-100 rounded-xl flex items-center justify-center">
-              <MessageCircle className="w-5 h-5 text-gray-600" />
-            </div>
-            <div>
-              <p className="text-2xl font-bold text-gray-600">{contagem.total}</p>
-              <p className="text-sm text-gray-500">Total</p>
-            </div>
-          </div>
+          <MessageCircle className="w-3.5 h-3.5" />
+          Todos
+          <span className="ml-0.5 opacity-75">{contagem.total}</span>
+        </button>
+        <button
+          onClick={() => setFiltro('atrasado')}
+          className={clsx(
+            'inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium transition-all',
+            filtro === 'atrasado'
+              ? 'bg-red-600 text-white'
+              : 'bg-red-50 text-red-700 hover:bg-red-100'
+          )}
+        >
+          <AlertCircle className="w-3.5 h-3.5" />
+          Atrasados
+          <span className="ml-0.5 opacity-75">{contagem.atrasados}</span>
+        </button>
+        <button
+          onClick={() => setFiltro('hoje')}
+          className={clsx(
+            'inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium transition-all',
+            filtro === 'hoje'
+              ? 'bg-yellow-600 text-white'
+              : 'bg-yellow-50 text-yellow-700 hover:bg-yellow-100'
+          )}
+        >
+          <Clock className="w-3.5 h-3.5" />
+          Hoje
+          <span className="ml-0.5 opacity-75">{contagem.hoje}</span>
+        </button>
+        <button
+          onClick={() => setFiltro('futuro')}
+          className={clsx(
+            'inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium transition-all',
+            filtro === 'futuro'
+              ? 'bg-blue-600 text-white'
+              : 'bg-blue-50 text-blue-700 hover:bg-blue-100'
+          )}
+        >
+          <Calendar className="w-3.5 h-3.5" />
+          Próximos
+          <span className="ml-0.5 opacity-75">{contagem.futuro}</span>
         </button>
       </div>
 
