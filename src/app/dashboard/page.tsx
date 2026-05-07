@@ -19,9 +19,7 @@ import {
   Send,
   Target,
   TrendingUp,
-  TrendingDown,
   Users,
-  Zap,
 } from 'lucide-react';
 import { format, formatDistanceToNow } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
@@ -65,12 +63,14 @@ interface DadosHoje {
 
 interface DadosPeriodo {
   periodo_dias: number;
-  funnel: { novos: number; qualificados: number; finalizados: number; mortos: number };
+  total_cadastros: number;
+  total_ativados: number;
   taxa_conversao_pct: number;
+  tempo_mediana_ativar_dias: number | null;
   tempo_medio_ativar_dias: number | null;
+  amostra_tempo_ativar: number;
   followups: { total: number; respondidos: number; taxa_resposta_pct: number };
   serie_temporal_msgs: Array<{ dia: string; ia: number; humanas: number }>;
-  serie_temporal_leads: Array<{ dia: string; total: number }>;
 }
 
 interface Alerta {
@@ -286,25 +286,29 @@ function DashboardContent() {
 
         {periodo && (
           <>
-            {/* KPIs do período */}
-            <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-4">
+            {/* KPIs do período (3 cards limpos) */}
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-4">
               <KpiCard
                 icone={<Target className="w-5 h-5" />}
                 cor="purple"
                 titulo="Taxa de conversão"
                 valor={`${periodo.taxa_conversao_pct}%`}
-                subtitulo={`${periodo.funnel.finalizados} de ${periodo.funnel.novos} ativaram`}
+                subtitulo={`${periodo.total_ativados} de ${periodo.total_cadastros} ativaram`}
               />
               <KpiCard
                 icone={<Clock className="w-5 h-5" />}
                 cor="blue"
-                titulo="Tempo médio até ativar"
+                titulo="Tempo até ativar (mediana)"
                 valor={
-                  periodo.tempo_medio_ativar_dias !== null
-                    ? `${periodo.tempo_medio_ativar_dias} dias`
+                  periodo.tempo_mediana_ativar_dias !== null
+                    ? `${periodo.tempo_mediana_ativar_dias} dias`
                     : '—'
                 }
-                subtitulo="Dos leads ativados"
+                subtitulo={
+                  periodo.amostra_tempo_ativar > 0
+                    ? `${periodo.amostra_tempo_ativar} leads · média ${periodo.tempo_medio_ativar_dias} dias`
+                    : 'Sem dados'
+                }
               />
               <KpiCard
                 icone={<Send className="w-5 h-5" />}
@@ -313,25 +317,6 @@ function DashboardContent() {
                 valor={`${periodo.followups.taxa_resposta_pct}%`}
                 subtitulo={`${periodo.followups.respondidos} de ${periodo.followups.total} responderam`}
               />
-              <KpiCard
-                icone={<Zap className="w-5 h-5" />}
-                cor="amber"
-                titulo="Mortos vs Ativados"
-                valor={`${periodo.funnel.mortos} / ${periodo.funnel.finalizados}`}
-                subtitulo={
-                  periodo.funnel.finalizados > 0
-                    ? `Razão ${(periodo.funnel.mortos / periodo.funnel.finalizados).toFixed(1)}x`
-                    : 'Sem ativações'
-                }
-              />
-            </div>
-
-            {/* Funnel visual */}
-            <div className="bg-white border border-gray-200 rounded-lg p-6 mb-4">
-              <h3 className="text-sm font-semibold text-gray-900 mb-4">
-                Funnel de Conversão ({periodo.periodo_dias} dias)
-              </h3>
-              <FunnelVisual funnel={periodo.funnel} />
             </div>
 
             {/* Gráfico de mensagens (SVG nativo) */}
@@ -436,75 +421,6 @@ function AlertaCard({ alerta, onClick }: { alerta: Alerta; onClick?: () => void 
         <p className="text-sm text-gray-700 mt-1">{alerta.descricao}</p>
       </div>
       {alerta.link && <ArrowRight className={clsx('w-4 h-4 mt-1', c.icon)} />}
-    </div>
-  );
-}
-
-// ============================================
-// FUNNEL VISUAL
-// ============================================
-function FunnelVisual({
-  funnel,
-}: {
-  funnel: { novos: number; qualificados: number; finalizados: number; mortos: number };
-}) {
-  const max = funnel.novos || 1;
-  const etapas = [
-    { label: 'Novos', valor: funnel.novos, cor: 'bg-gray-400' },
-    { label: 'Qualificados', valor: funnel.qualificados, cor: 'bg-blue-500' },
-    { label: 'Ativados', valor: funnel.finalizados, cor: 'bg-green-500' },
-  ];
-
-  return (
-    <div className="space-y-3">
-      {etapas.map((e, i) => {
-        const pct = max > 0 ? (e.valor / max) * 100 : 0;
-        const taxaProxima = i < etapas.length - 1 && e.valor > 0
-          ? Math.round((etapas[i + 1].valor / e.valor) * 1000) / 10
-          : null;
-        return (
-          <div key={e.label}>
-            <div className="flex items-center justify-between mb-1">
-              <span className="text-sm font-medium text-gray-700">{e.label}</span>
-              <span className="text-sm font-semibold text-gray-900">{e.valor}</span>
-            </div>
-            <div className="h-8 bg-gray-100 rounded overflow-hidden relative">
-              <div
-                className={clsx('h-full transition-all duration-500', e.cor)}
-                style={{ width: `${pct}%` }}
-              />
-              {pct < 30 && (
-                <span className="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-gray-700 font-mono">
-                  {pct.toFixed(0)}%
-                </span>
-              )}
-              {pct >= 30 && (
-                <span className="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-white font-mono">
-                  {pct.toFixed(0)}%
-                </span>
-              )}
-            </div>
-            {taxaProxima !== null && (
-              <p className="text-xs text-gray-500 mt-1">
-                <TrendingDown className="w-3 h-3 inline mr-1" />
-                {taxaProxima}% avançam pra {etapas[i + 1].label.toLowerCase()}
-              </p>
-            )}
-          </div>
-        );
-      })}
-
-      {funnel.mortos > 0 && (
-        <div className="pt-3 mt-3 border-t border-gray-200">
-          <div className="flex items-center justify-between text-sm">
-            <span className="text-gray-600 flex items-center gap-2">
-              <span className="w-3 h-3 bg-red-400 rounded-full" />
-              Lead morto (no período)
-            </span>
-            <span className="font-semibold text-red-600">{funnel.mortos}</span>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
