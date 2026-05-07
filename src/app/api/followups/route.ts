@@ -1,5 +1,7 @@
 // ===========================================
 // API: /api/followups
+// GET: Lista follow-ups (com filtros)
+// POST: Criar novo follow-up
 // v3 - Adaptado para tatiane_followups
 // ===========================================
 
@@ -19,10 +21,11 @@ export async function GET(req: NextRequest) {
     const client = supabaseAdmin || supabase;
     const { searchParams } = new URL(req.url);
 
-    const status = searchParams.get('status');
-    const situacao = searchParams.get('situacao');
+    const status = searchParams.get('status'); // pendente, concluido, cancelado, falha
+    const situacao = searchParams.get('situacao'); // atrasado, hoje, futuro
     const leadId = searchParams.get('lead_id');
 
+    // tatiane_followups com dados do lead
     let query = client
       .from('tatiane_followups')
       .select(`
@@ -38,6 +41,7 @@ export async function GET(req: NextRequest) {
       `)
       .order('data_agendada', { ascending: true });
 
+    // Por padrão, só mostra pendentes
     if (status) {
       query = query.eq('status', status);
     } else {
@@ -52,12 +56,31 @@ export async function GET(req: NextRequest) {
 
     if (error) throw error;
 
-    const hoje = new Date().toISOString().split('T')[0];
+    // Processar situação (atrasado, hoje, futuro)
+    // IMPORTANTE: usar timezone America/Bahia (UTC-3), não UTC
+    // O backend roda em UTC mas o usuário enxerga horário de Salvador.
+    const TZ = 'America/Bahia';
+
+    // Helper: extrai 'YYYY-MM-DD' no timezone alvo
+    const dataLocal = (d: Date | string): string => {
+      const date = typeof d === 'string' ? new Date(d) : d;
+      // pt-BR + sv-SE retornam YYYY-MM-DD; usamos sv-SE pra garantir hifenado
+      const formatter = new Intl.DateTimeFormat('sv-SE', {
+        timeZone: TZ,
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+      });
+      return formatter.format(date);
+    };
+
+    const hoje = dataLocal(new Date());
 
     const processados = (followups || []).map((f: any) => {
       let situacaoCalc = f.status;
       if (f.status === 'pendente' && f.data_agendada) {
-        const dataAgendadaStr = String(f.data_agendada).slice(0, 10);
+        // Compara a data em horário de Salvador, não UTC
+        const dataAgendadaStr = dataLocal(f.data_agendada);
         if (dataAgendadaStr < hoje) situacaoCalc = 'atrasado';
         else if (dataAgendadaStr === hoje) situacaoCalc = 'hoje';
         else situacaoCalc = 'futuro';
@@ -65,10 +88,12 @@ export async function GET(req: NextRequest) {
       return { ...f, situacao: situacaoCalc };
     });
 
+    // Filtrar por situação se solicitado
     const filtrados = situacao
       ? processados.filter(f => f.situacao === situacao)
       : processados;
 
+    // Contar por situação
     const contagem = {
       atrasados: processados.filter(f => f.situacao === 'atrasado').length,
       hoje: processados.filter(f => f.situacao === 'hoje').length,
@@ -113,6 +138,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    // tatiane_followups exige chat_lid (NOT NULL) — buscar do lead
     const { data: lead, error: leadErr } = await client
       .from('dados_cliente')
       .select('chat_lid')
@@ -126,6 +152,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    // Cancelar follow-ups pendentes anteriores (só pode ter 1 ativo por lead)
     const { data: existentes } = await client
       .from('tatiane_followups')
       .select('id, sequencia')
@@ -140,6 +167,7 @@ export async function POST(req: NextRequest) {
         .eq('status', 'pendente');
     }
 
+    // Calcular sequência
     const { data: todosFollowups } = await client
       .from('tatiane_followups')
       .select('sequencia')
@@ -151,11 +179,14 @@ export async function POST(req: NextRequest) {
       ? (todosFollowups[0].sequencia || 0) + 1
       : 1;
 
+    // Persistir notas + criado_por dentro de "mensagem" como prefixo (sem coluna dedicada)
+    // Convenção: "[notas: ...] [por: userId] motivo livre"
     const partesMensagem: string[] = [];
     if (notas) partesMensagem.push(`[notas: ${notas}]`);
     if (user.id) partesMensagem.push(`[por: ${user.id}]`);
     const mensagem = partesMensagem.length > 0 ? partesMensagem.join(' ') : null;
 
+    // Criar novo follow-up
     const { data: novoFollowup, error } = await client
       .from('tatiane_followups')
       .insert({
