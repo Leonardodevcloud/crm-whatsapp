@@ -444,22 +444,13 @@ function ChartMensagens({ dados }: { dados: Array<{ dia: string; ia: number; hum
   const xAt = (i: number) => PAD.left + (N === 1 ? plotW / 2 : (i / (N - 1)) * plotW);
   const yAt = (v: number) => PAD.top + plotH - (v / yMax) * plotH;
 
-  // Catmull-Rom → Bézier
-  const smoothPath = (points: Array<{ x: number; y: number }>) => {
+  // Path linear (linhas retas entre pontos) — mostra picos e vales nítidos
+  const linearPath = (points: Array<{ x: number; y: number }>) => {
     if (points.length === 0) return '';
     if (points.length === 1) return `M ${points[0].x} ${points[0].y}`;
     let d = `M ${points[0].x} ${points[0].y}`;
-    for (let i = 0; i < points.length - 1; i++) {
-      const p0 = points[i - 1] || points[i];
-      const p1 = points[i];
-      const p2 = points[i + 1];
-      const p3 = points[i + 2] || p2;
-      const t = 0.2;
-      const cp1x = p1.x + (p2.x - p0.x) * t;
-      const cp1y = p1.y + (p2.y - p0.y) * t;
-      const cp2x = p2.x - (p3.x - p1.x) * t;
-      const cp2y = p2.y - (p3.y - p1.y) * t;
-      d += ` C ${cp1x} ${cp1y}, ${cp2x} ${cp2y}, ${p2.x} ${p2.y}`;
+    for (let i = 1; i < points.length; i++) {
+      d += ` L ${points[i].x} ${points[i].y}`;
     }
     return d;
   };
@@ -468,8 +459,8 @@ function ChartMensagens({ dados }: { dados: Array<{ dia: string; ia: number; hum
   const pontosHum = dados.map((d, i) => ({ x: xAt(i), y: yAt(d.humanas) }));
 
   const baseY = PAD.top + plotH;
-  const areaIa = `${smoothPath(pontosIa)} L ${pontosIa[N - 1].x} ${baseY} L ${pontosIa[0].x} ${baseY} Z`;
-  const areaHum = `${smoothPath(pontosHum)} L ${pontosHum[N - 1].x} ${baseY} L ${pontosHum[0].x} ${baseY} Z`;
+  const areaIa = `${linearPath(pontosIa)} L ${pontosIa[N - 1].x} ${baseY} L ${pontosIa[0].x} ${baseY} Z`;
+  const areaHum = `${linearPath(pontosHum)} L ${pontosHum[N - 1].x} ${baseY} L ${pontosHum[0].x} ${baseY} Z`;
 
   // Gridlines (4 linhas)
   const gridLines = Array.from({ length: 5 }, (_, i) => {
@@ -478,7 +469,8 @@ function ChartMensagens({ dados }: { dados: Array<{ dia: string; ia: number; hum
   });
 
   // Labels X (mostra só alguns)
-  const stepX = Math.max(1, Math.ceil(N / 7));
+  // Mostra labels no eixo X: TODOS se ≤14 dias, senão a cada N para caber ~10 labels
+  const stepX = N <= 14 ? 1 : Math.max(1, Math.ceil(N / 10));
 
   return (
     <div className="w-full overflow-hidden">
@@ -515,9 +507,47 @@ function ChartMensagens({ dados }: { dados: Array<{ dia: string; ia: number; hum
         <path d={areaIa} fill="url(#dashGradIa)" />
         <path d={areaHum} fill="url(#dashGradHum)" />
 
-        {/* Linhas */}
-        <path d={smoothPath(pontosIa)} fill="none" stroke="#7c3aed" strokeWidth="2.5" />
-        <path d={smoothPath(pontosHum)} fill="none" stroke="#3b82f6" strokeWidth="2.5" />
+        {/* Linhas (linear, mostram picos/vales nítidos) */}
+        <path d={linearPath(pontosIa)} fill="none" stroke="#7c3aed" strokeWidth="2.5" />
+        <path d={linearPath(pontosHum)} fill="none" stroke="#3b82f6" strokeWidth="2.5" />
+
+        {/* Pontos nos vértices (Tatiane) */}
+        {pontosIa.map((p, i) => (
+          <circle key={`pi-${i}`} cx={p.x} cy={p.y} r="3.5" fill="#7c3aed" stroke="white" strokeWidth="1.5" />
+        ))}
+        {/* Pontos nos vértices (Leads) */}
+        {pontosHum.map((p, i) => (
+          <circle key={`ph-${i}`} cx={p.x} cy={p.y} r="3.5" fill="#3b82f6" stroke="white" strokeWidth="1.5" />
+        ))}
+
+        {/* Valores acima de cada ponto (só nos pontos visíveis) */}
+        {dados.map((d, i) => {
+          if (i % stepX !== 0 && i !== N - 1) return null;
+          return (
+            <g key={`vals-${i}`}>
+              <text
+                x={xAt(i)}
+                y={yAt(d.ia) - 8}
+                textAnchor="middle"
+                fontSize="10"
+                fill="#7c3aed"
+                fontWeight="600"
+              >
+                {d.ia}
+              </text>
+              <text
+                x={xAt(i)}
+                y={yAt(d.humanas) - 8}
+                textAnchor="middle"
+                fontSize="10"
+                fill="#3b82f6"
+                fontWeight="600"
+              >
+                {d.humanas}
+              </text>
+            </g>
+          );
+        })}
 
         {/* Labels X */}
         {dados.map((d, i) => {
