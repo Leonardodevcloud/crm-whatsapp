@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import AuthLayout from '@/components/AuthLayout';
+import SaudeTatianeTabs from '@/components/SaudeTatianeTabs';
 import { useApi } from '@/lib/hooks';
 import {
   Activity,
@@ -138,11 +139,11 @@ function DashboardContent() {
   return (
     <div className="p-4 lg:p-6 max-w-7xl mx-auto">
       {/* ================== HEADER ================== */}
-      <div className="flex items-center justify-between mb-6 flex-wrap gap-4">
+      <div className="flex items-center justify-between mb-4 flex-wrap gap-4">
         <div>
           <h1 className="text-2xl lg:text-3xl font-bold text-gray-900 flex items-center gap-2">
             <Activity className="w-7 h-7 text-purple-600" />
-            Dashboard
+            Saúde Tatiane
           </h1>
           <p className="text-sm text-gray-600 mt-1">Visão executiva da operação Tutts</p>
         </div>
@@ -155,6 +156,9 @@ function DashboardContent() {
           Atualizar
         </button>
       </div>
+
+      {/* ================== SUB-TABS ================== */}
+      <SaudeTatianeTabs />
 
       {/* ================== ERRO ================== */}
       {erro && (
