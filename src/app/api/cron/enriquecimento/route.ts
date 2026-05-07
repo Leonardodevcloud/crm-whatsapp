@@ -333,6 +333,12 @@ export async function POST(req: NextRequest) {
             updated_at: new Date().toISOString(),
           };
 
+          // Se virou finalizado pela primeira vez, registra data_ativacao
+          // (evita sobrescrever se já tiver — pra leads ressuscitados manter primeira data)
+          if (novoStage === 'finalizado' && !lead.data_ativacao) {
+            updateStage.data_ativacao = new Date().toISOString();
+          }
+
           // Se era lead_morto e agora está ativo = ressuscitado
           if (lead.stage === 'lead_morto' && novoStage === 'finalizado') {
             updateStage.ressuscitado_em = new Date().toISOString();
@@ -383,9 +389,9 @@ export async function POST(req: NextRequest) {
 
       for (const lead of leadsFollowup || []) {
         try {
-          // Buscar follow-ups do lead (tabela: tatiane_followups)
+          // Buscar follow-ups do lead
           const { data: followups } = await client
-            .from('tatiane_followups')
+            .from('followups')
             .select('*')
             .eq('lead_id', lead.id)
             .order('created_at', { ascending: false });
@@ -402,7 +408,7 @@ export async function POST(req: NextRequest) {
               await client.from('dados_cliente')
                 .update({ stage: 'lead_morto', updated_at: new Date().toISOString() })
                 .eq('id', lead.id);
-              await client.from('tatiane_followups')
+              await client.from('followups')
                 .update({ status: 'cancelado' })
                 .eq('id', followupPendente.id);
               resultado.etapa3_followups.mortos++;
@@ -434,9 +440,8 @@ export async function POST(req: NextRequest) {
           }
 
           // Follow-up concluído há 5+ dias e ainda não finalizou
-          // (tatiane_followups: 'enviado_em' é o timestamp de conclusão)
-          if (ultimoConcluido && !followupPendente && ultimoConcluido.enviado_em) {
-            const dataConclusao = new Date(ultimoConcluido.enviado_em);
+          if (ultimoConcluido && !followupPendente) {
+            const dataConclusao = new Date(ultimoConcluido.completed_at);
             const diasDesdeConclusao = Math.floor((hoje.getTime() - dataConclusao.getTime()) / (1000 * 60 * 60 * 24));
             if (diasDesdeConclusao >= PRAZOS.APOS_FOLLOWUP_CONCLUIDO) {
               deveCriar = true;
@@ -445,23 +450,15 @@ export async function POST(req: NextRequest) {
           }
 
           if (deveCriar && motivo) {
-            // tatiane_followups exige chat_lid (NOT NULL)
-            if (!lead.chat_lid) {
-              console.log(`[CRON E3] Lead ${lead.id} sem chat_lid — pulando criação de follow-up`);
-              continue;
-            }
-
             const maxSeq = followups?.reduce((max: number, f: any) => Math.max(max, f.sequencia || 1), 0) || 0;
             const dataFollowup = new Date(hoje);
             dataFollowup.setDate(dataFollowup.getDate() + 1);
 
-            await client.from('tatiane_followups').insert({
+            await client.from('followups').insert({
               lead_id: lead.id,
-              chat_lid: lead.chat_lid,
-              data_agendada: dataFollowup.toISOString(),
+              data_agendada: dataFollowup.toISOString().split('T')[0],
               motivo,
               tipo: 'automatico',
-              status: 'pendente',
               sequencia: maxSeq + 1,
             });
             resultado.etapa3_followups.criados++;
