@@ -125,19 +125,61 @@ export async function GET(req: NextRequest) {
 
     // ============================================
     // 4. ÚLTIMO ENVIO + HISTÓRICO DE RODADAS
-    // Busca todos os enviados nas últimas 8h para agrupar em rodadas
+    // Lê direto de tatiane_worker_runs (registra TODAS as rodadas,
+    // incluindo vazias e as puladas por janela horária).
+    // Fallback: se a tabela ainda não existir, usa lógica antiga (agrupar enviados).
     // ============================================
-    const { data: enviadosRecentes } = await client
-      .from('tatiane_followups')
-      .select('enviado_em')
-      .eq('status', 'concluido')
-      .not('enviado_em', 'is', null)
-      .gte('enviado_em', ha8h)
-      .order('enviado_em', { ascending: false });
+    let rodadas: Array<{ inicio: string; enviados: number; pulou_janela?: boolean; falhas?: number }> = [];
+    let ultimoEnvio: string | null = null;
 
-    const rodadas = agruparRodadas(enviadosRecentes || []);
+    try {
+      const { data: rodadasTabela, error: errRodadas } = await client
+        .from('tatiane_worker_runs')
+        .select('iniciado_em, enviados, pulou_janela, falhas')
+        .eq('worker', 'followup')
+        .order('iniciado_em', { ascending: false })
+        .limit(8);
+
+      if (errRodadas) throw errRodadas;
+
+      rodadas = (rodadasTabela || []).map((r: any) => ({
+        inicio: r.iniciado_em,
+        enviados: r.enviados || 0,
+        pulou_janela: r.pulou_janela || false,
+        falhas: r.falhas || 0,
+      }));
+
+      // Pega o último envio real de followup pra subtítulo
+      const { data: ultimoEnviado } = await client
+        .from('tatiane_followups')
+        .select('enviado_em')
+        .eq('status', 'concluido')
+        .not('enviado_em', 'is', null)
+        .order('enviado_em', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      ultimoEnvio = ultimoEnviado?.enviado_em || null;
+    } catch (errFb: any) {
+      // Fallback (tabela ainda não existe): agrupa enviados como antes
+      console.warn('[worker-status] Fallback agrupar:', errFb.message);
+      const { data: enviadosRecentes } = await client
+        .from('tatiane_followups')
+        .select('enviado_em')
+        .eq('status', 'concluido')
+        .not('enviado_em', 'is', null)
+        .gte('enviado_em', ha8h)
+        .order('enviado_em', { ascending: false });
+      const grupos = agruparRodadas(enviadosRecentes || []);
+      rodadas = grupos.map(g => ({
+        inicio: g.inicio,
+        enviados: g.total,
+        pulou_janela: false,
+        falhas: 0,
+      }));
+      ultimoEnvio = enviadosRecentes?.[0]?.enviado_em || null;
+    }
+
     const ultimaRodada = rodadas[0] || null;
-    const ultimoEnvio = enviadosRecentes?.[0]?.enviado_em || null;
 
     // ============================================
     // 5. TAXA DE RESPOSTA 7d e 30d
@@ -236,7 +278,8 @@ export async function GET(req: NextRequest) {
         // Card "Tatiane IA"
         ultima_rodada: ultimaRodada ? {
           inicio: ultimaRodada.inicio,
-          enviados: ultimaRodada.total,
+          enviados: ultimaRodada.enviados,
+          pulou_janela: ultimaRodada.pulou_janela || false,
         } : null,
         proxima_rodada: proximaRodada,
         ultimo_envio: ultimoEnvio,
@@ -250,7 +293,9 @@ export async function GET(req: NextRequest) {
         // Histórico
         historico_rodadas: rodadas.map(r => ({
           inicio: r.inicio,
-          enviados: r.total,
+          enviados: r.enviados,
+          pulou_janela: r.pulou_janela || false,
+          falhas: r.falhas || 0,
         })),
 
         // Meta
