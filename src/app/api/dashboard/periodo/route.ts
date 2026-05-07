@@ -178,6 +178,7 @@ export async function GET(req: NextRequest) {
 
     // ============================================
     // 5. SÉRIE TEMPORAL DE MENSAGENS
+    // Agrupa por DIA EM SALVADOR (não UTC) — UTC bagunça meia-noite
     // ============================================
     const { data: msgsDiarias } = await client
       .from('tatiane_chat_histories')
@@ -185,18 +186,39 @@ export async function GET(req: NextRequest) {
       .gte('created_at', limite)
       .order('created_at', { ascending: true });
 
+    // Helper: converte timestamp UTC pra YYYY-MM-DD em Salvador
+    const dataSalvador = (ts: string): string => {
+      const d = new Date(ts);
+      // Salvador é UTC-3 fixo (sem horário de verão)
+      const salvador = new Date(d.getTime() - 3 * 60 * 60 * 1000);
+      return salvador.toISOString().slice(0, 10);
+    };
+
     const porDia = new Map<string, { ia: number; humanas: number }>();
     (msgsDiarias || []).forEach((m: any) => {
-      const dia = m.created_at.slice(0, 10);
+      const dia = dataSalvador(m.created_at);
       if (!porDia.has(dia)) porDia.set(dia, { ia: 0, humanas: 0 });
       const stats = porDia.get(dia)!;
       if (m.message_type === 'human') stats.humanas++;
       else stats.ia++;
     });
 
-    const serieTemporalMsgs = Array.from(porDia.entries())
-      .map(([dia, stats]) => ({ dia, ...stats }))
-      .sort((a, b) => a.dia.localeCompare(b.dia));
+    // Preencher dias sem dados (zera) pra gráfico ficar completo
+    const hojeSalvador = dataSalvador(new Date().toISOString());
+    const inicioSalvador = dataSalvador(new Date(limiteMs).toISOString());
+    const dias_arr: string[] = [];
+    let cursor = new Date(inicioSalvador + 'T12:00:00.000Z');
+    const fim = new Date(hojeSalvador + 'T12:00:00.000Z');
+    while (cursor <= fim) {
+      dias_arr.push(cursor.toISOString().slice(0, 10));
+      cursor.setUTCDate(cursor.getUTCDate() + 1);
+    }
+
+    const serieTemporalMsgs = dias_arr.map(dia => ({
+      dia,
+      ia: porDia.get(dia)?.ia ?? 0,
+      humanas: porDia.get(dia)?.humanas ?? 0,
+    }));
 
     return NextResponse.json({
       success: true,
