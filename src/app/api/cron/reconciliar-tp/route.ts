@@ -262,13 +262,42 @@ export async function POST(req: NextRequest) {
     // ========================================================================
     // 3. Carregar TODOS os leads existentes para índice em memória
     //    Campos: id, telefone (para match), nomewpp/regiao/tags (para reconciliar)
+    //
+    // BUG ANTERIOR: usava .limit(100_000) mas o Supabase tem LIMITE DEFAULT
+    // de 1000 por requisição, ignorando esse limite. Isso fazia o cron achar
+    // que leads existentes eram novos e criar duplicatas em massa
+    // (15.422 duplicatas reais detectadas em 30 dias).
+    //
+    // FIX: paginar com .range() em batches de 1000 até esgotar a tabela.
     // ========================================================================
-    const { data: leadsExistentes, error: errLeads } = await client
-      .from('dados_cliente')
-      .select('id, telefone, nomewpp, regiao, tags')
-      .limit(100_000);
+    const PAGE_SIZE = 1000;
+    const MAX_PAGES = 200; // safety: 200k leads no máximo (deve ser suficiente)
+    let leadsExistentes: Array<{
+      id: number;
+      telefone: string | null;
+      nomewpp: string | null;
+      regiao: string | null;
+      tags: string[] | null;
+    }> = [];
 
-    if (errLeads) throw new Error(`Falha ao listar leads: ${errLeads.message}`);
+    for (let pagina = 0; pagina < MAX_PAGES; pagina++) {
+      const offsetIni = pagina * PAGE_SIZE;
+      const offsetFim = offsetIni + PAGE_SIZE - 1;
+
+      const { data, error: errLeads } = await client
+        .from('dados_cliente')
+        .select('id, telefone, nomewpp, regiao, tags')
+        .order('id', { ascending: true })
+        .range(offsetIni, offsetFim);
+
+      if (errLeads) throw new Error(`Falha ao listar leads (página ${pagina}): ${errLeads.message}`);
+      if (!data || data.length === 0) break;
+
+      leadsExistentes = leadsExistentes.concat(data);
+      if (data.length < PAGE_SIZE) break; // última página
+    }
+
+    console.log(`[Reconciliar-TP] Carregados ${leadsExistentes.length} leads existentes (paginação)`);
 
     // Índice: qualquer variação de telefone → lead (snapshot dos campos reconciliáveis)
     type LeadSnapshot = { id: number; nomewpp: string | null; regiao: string | null; tags: string[] | null };
