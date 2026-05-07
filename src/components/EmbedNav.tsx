@@ -7,7 +7,7 @@ import { Columns3, ArrowLeft, BarChart3, Clock, ClipboardList, UserPlus, Activit
 import clsx from 'clsx';
 
 const NAV_ITEMS = [
-  { href: '/dashboard', label: 'Dashboard', icon: Activity },
+  { href: '/dashboard', label: 'Saúde Tatiane', icon: Activity, matchPaths: ['/dashboard', '/saude-tatiane'] },
   { href: '/analytics', label: 'Analytics', icon: BarChart3 },
   { href: '/kanban', label: 'Kanban', icon: Columns3 },
   { href: '/followups', label: 'Follow-ups', icon: Clock },
@@ -49,7 +49,8 @@ export default function EmbedNav() {
           <span className="font-semibold text-gray-800">CRM WhatsApp</span>
           <nav className="flex gap-1 ml-2">
             {NAV_ITEMS.map((item) => {
-              const isActive = pathname.startsWith(item.href);
+              const matches: string[] = (item as any).matchPaths || [item.href];
+              const isActive = matches.some(p => pathname.startsWith(p));
               return (
                 <Link key={item.href} href={item.href}
                   className={clsx('flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors',
