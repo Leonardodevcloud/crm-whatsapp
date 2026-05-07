@@ -130,31 +130,56 @@ export async function GET(req: NextRequest) {
     }
 
     // ============================================
-    // 4. TAXA DE RESPOSTA DE FOLLOW-UPS
+    // 4. TAXA DE RESPOSTA DE FOLLOW-UPS (paginado, Supabase limita 1000)
     // ============================================
-    const { data: fupsConcluidos } = await client
-      .from('tatiane_followups')
-      .select('id, chat_lid, enviado_em')
-      .eq('status', 'concluido')
-      .not('enviado_em', 'is', null)
-      .not('chat_lid', 'is', null)
-      .gte('enviado_em', limite);
+    const PAGE_SIZE = 1000;
+    const MAX_PAGES = 50; // safety: até 50k registros por consulta
 
-    const fups = fupsConcluidos || [];
+    let fupsConcluidos: Array<{ id: number; chat_lid: string; enviado_em: string }> = [];
+    for (let pagina = 0; pagina < MAX_PAGES; pagina++) {
+      const offIni = pagina * PAGE_SIZE;
+      const offFim = offIni + PAGE_SIZE - 1;
+      const { data, error } = await client
+        .from('tatiane_followups')
+        .select('id, chat_lid, enviado_em')
+        .eq('status', 'concluido')
+        .not('enviado_em', 'is', null)
+        .not('chat_lid', 'is', null)
+        .gte('enviado_em', limite)
+        .order('id', { ascending: true })
+        .range(offIni, offFim);
+      if (error || !data || data.length === 0) break;
+      fupsConcluidos = fupsConcluidos.concat(data as any);
+      if (data.length < PAGE_SIZE) break;
+    }
+
+    const fups = fupsConcluidos;
     const totalFollowups = fups.length;
 
     let respondidos = 0;
     if (fups.length > 0) {
       const chatLids = Array.from(new Set(fups.map((f: any) => f.chat_lid).filter(Boolean)));
-      const { data: msgsHuman } = await client
-        .from('tatiane_chat_histories')
-        .select('session_id, created_at')
-        .in('session_id', chatLids)
-        .eq('message_type', 'human')
-        .gte('created_at', limite);
+
+      // Paginar msgsHuman também (pode passar de 1000)
+      let msgsHuman: Array<{ session_id: string; created_at: string }> = [];
+      for (let pagina = 0; pagina < MAX_PAGES; pagina++) {
+        const offIni = pagina * PAGE_SIZE;
+        const offFim = offIni + PAGE_SIZE - 1;
+        const { data, error } = await client
+          .from('tatiane_chat_histories')
+          .select('session_id, created_at')
+          .in('session_id', chatLids)
+          .eq('message_type', 'human')
+          .gte('created_at', limite)
+          .order('created_at', { ascending: true })
+          .range(offIni, offFim);
+        if (error || !data || data.length === 0) break;
+        msgsHuman = msgsHuman.concat(data as any);
+        if (data.length < PAGE_SIZE) break;
+      }
 
       const msgsBySession = new Map<string, string[]>();
-      (msgsHuman || []).forEach((m: any) => {
+      msgsHuman.forEach((m: any) => {
         if (!msgsBySession.has(m.session_id)) msgsBySession.set(m.session_id, []);
         msgsBySession.get(m.session_id)!.push(m.created_at);
       });
@@ -180,12 +205,33 @@ export async function GET(req: NextRequest) {
     // 5. SÉRIE TEMPORAL DE MENSAGENS
     // Agrupa por DIA EM SALVADOR usando Intl (não UTC).
     // Garante todos os dias do período (zera os sem dados).
+    //
+    // IMPORTANTE: Supabase tem limite default de 1000 por requisição.
+    // Pra períodos com muitas mensagens (>1k), precisamos paginar via .range()
     // ============================================
-    const { data: msgsDiarias } = await client
-      .from('tatiane_chat_histories')
-      .select('created_at, message_type')
-      .gte('created_at', limite)
-      .order('created_at', { ascending: true });
+    let msgsDiarias: Array<{ created_at: string; message_type: string }> = [];
+
+    for (let pagina = 0; pagina < MAX_PAGES; pagina++) {
+      const offIni = pagina * PAGE_SIZE;
+      const offFim = offIni + PAGE_SIZE - 1;
+
+      const { data, error: errMsg } = await client
+        .from('tatiane_chat_histories')
+        .select('created_at, message_type')
+        .gte('created_at', limite)
+        .order('created_at', { ascending: true })
+        .range(offIni, offFim);
+
+      if (errMsg) {
+        console.error(`[dashboard/periodo] Erro paginação msgs (pág ${pagina}):`, errMsg.message);
+        break;
+      }
+      if (!data || data.length === 0) break;
+      msgsDiarias = msgsDiarias.concat(data);
+      if (data.length < PAGE_SIZE) break; // última página
+    }
+
+    console.log(`[dashboard/periodo] ${dias}d → ${msgsDiarias.length} mensagens carregadas`);
 
     // Normaliza timestamp Postgres pra ISO válido (Postgres usa "+00" sem ":00")
     const normalizarTimestamp = (ts: string): string => {
@@ -211,7 +257,7 @@ export async function GET(req: NextRequest) {
     };
 
     const porDia = new Map<string, { ia: number; humanas: number }>();
-    (msgsDiarias || []).forEach((m: any) => {
+    msgsDiarias.forEach((m: any) => {
       const dia = dataSalvador(m.created_at);
       if (!porDia.has(dia)) porDia.set(dia, { ia: 0, humanas: 0 });
       const stats = porDia.get(dia)!;
@@ -220,11 +266,9 @@ export async function GET(req: NextRequest) {
     });
 
     // Gera array de dias YYYY-MM-DD desde "limite" até hoje (Salvador)
-    // Vai do dia mais antigo ao dia atual, em Salvador.
     const hojeSalvadorStr = dataSalvador(new Date());
     const inicioSalvadorStr = dataSalvador(new Date(limiteMs));
     const dias_arr: string[] = [];
-    // Usa Date em UTC só pra incrementar dia (com hora 12:00 evita TZ borda)
     const cursor = new Date(inicioSalvadorStr + 'T12:00:00Z');
     const fim = new Date(hojeSalvadorStr + 'T12:00:00Z');
     while (cursor.getTime() <= fim.getTime()) {
