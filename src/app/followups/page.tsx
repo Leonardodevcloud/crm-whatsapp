@@ -1,268 +1,625 @@
+'use client';
+
 // ===========================================
-// API: /api/followups/worker-status
-// GET: Retorna status operacional do worker de follow-up
-// - Total de pendentes (sem filtro de data)
-// - Última rodada (timestamp + quantos foram enviados)
-// - Próxima rodada (calculada com base no schedule */30 8-20 * * *)
-// - Enviados 24h, 7d
-// - Taxa resposta 7d, 30d
-// - Histórico das últimas 6 rodadas
+// Página Follow-ups - Central de Acompanhamento
 // ===========================================
 
-import { NextRequest, NextResponse } from 'next/server';
-import { getUserFromHeader } from '@/lib/auth';
-import { supabase, supabaseAdmin } from '@/lib/supabase';
+import { useState, useEffect, useCallback } from 'react';
+import { useRouter } from 'next/navigation';
+import AuthLayout from '@/components/AuthLayout';
+import { useApi } from '@/lib/hooks';
+import { formatPhone } from '@/lib/auth-client';
+import {
+  Clock,
+  AlertCircle,
+  RefreshCw,
+  Loader2,
+  User,
+  Phone,
+  MapPin,
+  Calendar,
+  CheckCircle,
+  XCircle,
+  MessageCircle,
+  ChevronRight,
+  Zap,
+  Send,
+  Activity,
+  Sparkles,
+  Timer,
+  TrendingUp,
+} from 'lucide-react';
+import { format, formatDistanceToNow } from 'date-fns';
+import { ptBR } from 'date-fns/locale';
+import clsx from 'clsx';
 
-const TZ = 'America/Bahia';
-
-// Calcula a próxima rodada considerando schedule */30 8-20 * * * em Salvador
-function calcularProximaRodada(): string {
-  const agora = new Date();
-  // Hora atual em Salvador (UTC-3)
-  const agoraSalvador = new Date(agora.getTime() - 3 * 60 * 60 * 1000);
-  const horaSalvador = agoraSalvador.getUTCHours();
-  const minutoSalvador = agoraSalvador.getUTCMinutes();
-
-  let proximaHora = horaSalvador;
-  let proximoMinuto = minutoSalvador < 30 ? 30 : 0;
-  if (proximoMinuto === 0) proximaHora += 1;
-
-  // Fora da janela 8h-20h: próxima é 8h do dia seguinte (ou 8h hoje se for madrugada)
-  if (proximaHora < 8) {
-    proximaHora = 8;
-    proximoMinuto = 0;
-  } else if (proximaHora > 20 || (proximaHora === 20 && proximoMinuto > 0)) {
-    // Próximo dia 8h
-    const proximoDia = new Date(agoraSalvador);
-    proximoDia.setUTCDate(proximoDia.getUTCDate() + 1);
-    proximoDia.setUTCHours(8, 0, 0, 0);
-    return new Date(proximoDia.getTime() + 3 * 60 * 60 * 1000).toISOString();
+// Helpers de data seguros
+function parseDateSafe(value: any): Date | null {
+  if (!value) return null;
+  if (value instanceof Date) return isNaN(value.getTime()) ? null : value;
+  let s = String(value);
+  if (s.includes(' ') && !s.includes('T')) {
+    s = s.replace(' ', 'T');
   }
-
-  const proxima = new Date(agoraSalvador);
-  proxima.setUTCHours(proximaHora, proximoMinuto, 0, 0);
-  return new Date(proxima.getTime() + 3 * 60 * 60 * 1000).toISOString();
+  const d = new Date(s);
+  return isNaN(d.getTime()) ? null : d;
 }
-
-// Agrupa enviados em "rodadas" — burst de envios consecutivos com gap < 5min
-function agruparRodadas(enviados: Array<{ enviado_em: string }>): Array<{ inicio: string; total: number }> {
-  if (enviados.length === 0) return [];
-
-  // Ordena por data
-  const ordenado = [...enviados].sort((a, b) =>
-    new Date(a.enviado_em).getTime() - new Date(b.enviado_em).getTime()
-  );
-
-  const rodadas: Array<{ inicio: string; total: number }> = [];
-  let rodadaAtual = { inicio: ordenado[0].enviado_em, total: 1 };
-
-  for (let i = 1; i < ordenado.length; i++) {
-    const anterior = new Date(ordenado[i - 1].enviado_em).getTime();
-    const atual = new Date(ordenado[i].enviado_em).getTime();
-    const gapMin = (atual - anterior) / 60000;
-
-    if (gapMin < 5) {
-      // Mesma rodada
-      rodadaAtual.total++;
-    } else {
-      // Nova rodada
-      rodadas.push(rodadaAtual);
-      rodadaAtual = { inicio: ordenado[i].enviado_em, total: 1 };
-    }
-  }
-  rodadas.push(rodadaAtual);
-
-  // Retorna últimas 6, mais recente primeiro
-  return rodadas.reverse().slice(0, 6);
-}
-
-export async function GET(req: NextRequest) {
-  const authHeader = req.headers.get('authorization');
-  const user = getUserFromHeader(authHeader);
-  if (!user) {
-    return NextResponse.json({ error: 'Não autenticado', success: false }, { status: 401 });
-  }
-
+function safeFormatDistanceToNow(value: any, opts?: any): string {
+  const d = parseDateSafe(value);
+  if (!d) return '—';
   try {
-    const client = supabaseAdmin || supabase;
-    const agora = new Date();
-    const ha24h = new Date(agora.getTime() - 24 * 60 * 60 * 1000).toISOString();
-    const ha7d = new Date(agora.getTime() - 7 * 24 * 60 * 60 * 1000).toISOString();
-    const ha30d = new Date(agora.getTime() - 30 * 24 * 60 * 60 * 1000).toISOString();
-    const ha8h = new Date(agora.getTime() - 8 * 60 * 60 * 1000).toISOString();
+    return formatDistanceToNow(d, { locale: ptBR, addSuffix: true, ...opts });
+  } catch {
+    return '—';
+  }
+}
+function safeFormatTime(value: any): string {
+  const d = parseDateSafe(value);
+  if (!d) return '—';
+  try {
+    return format(d, 'HH:mm', { locale: ptBR });
+  } catch {
+    return '—';
+  }
+}
 
-    // ============================================
-    // 1. TOTAL PENDENTES (sem filtro de data)
-    // ============================================
-    const { count: totalPendentes } = await client
-      .from('tatiane_followups')
-      .select('*', { count: 'exact', head: true })
-      .eq('status', 'pendente');
+interface WorkerStatus {
+  total_pendentes: number;
+  atrasados: number;
+  enviados_hoje: number;
+  prox_7_dias: number;
+  ultima_rodada: { inicio: string; enviados: number } | null;
+  proxima_rodada: string;
+  ultimo_envio: string | null;
+  enviados_24h: number;
+  enviados_7d: number;
+  taxa_resposta_7d: { total: number; respondidos: number; taxa_pct: number };
+  taxa_resposta_30d: { total: number; respondidos: number; taxa_pct: number };
+  historico_rodadas: Array<{ inicio: string; enviados: number }>;
+  schedule: string;
+}
 
-    // ============================================
-    // 2. ATRASADOS (pendente E data_agendada < agora)
-    // ============================================
-    const { count: atrasados } = await client
-      .from('tatiane_followups')
-      .select('*', { count: 'exact', head: true })
-      .eq('status', 'pendente')
-      .lt('data_agendada', agora.toISOString());
+interface Followup {
+  id: number;
+  lead_id: number;
+  data_agendada: string;
+  motivo: string;
+  notas: string | null;
+  status: string;
+  tipo: string;
+  sequencia: number;
+  created_at: string;
+  situacao: 'atrasado' | 'hoje' | 'futuro';
+  dados_cliente: {
+    id: number;
+    nomewpp: string | null;
+    telefone: string;
+    stage: string;
+    regiao: string | null;
+  };
+}
 
-    // ============================================
-    // 3. ENVIADOS 24h e 7d
-    // ============================================
-    const { count: enviados24h } = await client
-      .from('tatiane_followups')
-      .select('*', { count: 'exact', head: true })
-      .eq('status', 'concluido')
-      .gte('enviado_em', ha24h);
+interface Contagem {
+  atrasados: number;
+  hoje: number;
+  futuro: number;
+  total: number;
+}
 
-    const { count: enviados7d } = await client
-      .from('tatiane_followups')
-      .select('*', { count: 'exact', head: true })
-      .eq('status', 'concluido')
-      .gte('enviado_em', ha7d);
+function FollowupsContent() {
+  const [followups, setFollowups] = useState<Followup[]>([]);
+  const [contagem, setContagem] = useState<Contagem>({ atrasados: 0, hoje: 0, futuro: 0, total: 0 });
+  const [workerStatus, setWorkerStatus] = useState<WorkerStatus | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [filtro, setFiltro] = useState<'todos' | 'atrasado' | 'hoje' | 'futuro'>('todos');
 
-    // ============================================
-    // 4. ÚLTIMO ENVIO + HISTÓRICO DE RODADAS
-    // Busca todos os enviados nas últimas 8h para agrupar em rodadas
-    // ============================================
-    const { data: enviadosRecentes } = await client
-      .from('tatiane_followups')
-      .select('enviado_em')
-      .eq('status', 'concluido')
-      .not('enviado_em', 'is', null)
-      .gte('enviado_em', ha8h)
-      .order('enviado_em', { ascending: false });
+  const { fetchApi } = useApi();
+  const router = useRouter();
 
-    const rodadas = agruparRodadas(enviadosRecentes || []);
-    const ultimaRodada = rodadas[0] || null;
-    const ultimoEnvio = enviadosRecentes?.[0]?.enviado_em || null;
+  // Carregar follow-ups
+  const loadFollowups = useCallback(async () => {
+    setIsRefreshing(true);
+    setError(null);
 
-    // ============================================
-    // 5. TAXA DE RESPOSTA 7d e 30d
-    // (resposta humana em até 48h após o envio)
-    // ============================================
-    const calcularTaxa = async (limite: string) => {
-      const { data: fups } = await client
-        .from('tatiane_followups')
-        .select('id, chat_lid, enviado_em')
-        .eq('status', 'concluido')
-        .not('enviado_em', 'is', null)
-        .not('chat_lid', 'is', null)
-        .gte('enviado_em', limite);
+    const params = new URLSearchParams();
+    if (filtro !== 'todos') {
+      params.set('situacao', filtro);
+    }
 
-      const arr = fups || [];
-      if (arr.length === 0) return { total: 0, respondidos: 0, taxa_pct: 0 };
+    const { data: response, error } = await fetchApi<{
+      success: boolean;
+      data: Followup[];
+      contagem: Contagem;
+    }>(`/api/followups?${params.toString()}`);
 
-      const chatLids = Array.from(new Set(arr.map((f: any) => f.chat_lid).filter(Boolean)));
-      const { data: msgsHum } = await client
-        .from('tatiane_chat_histories')
-        .select('session_id, created_at')
-        .in('session_id', chatLids)
-        .eq('message_type', 'human')
-        .gte('created_at', limite);
+    if (error) {
+      setError(error);
+    } else if (response?.success) {
+      setFollowups(response.data);
+      setContagem(response.contagem);
+    }
 
-      const msgsBySession = new Map<string, string[]>();
-      (msgsHum || []).forEach((m: any) => {
-        if (!msgsBySession.has(m.session_id)) msgsBySession.set(m.session_id, []);
-        msgsBySession.get(m.session_id)!.push(m.created_at);
-      });
+    setIsLoading(false);
+    setIsRefreshing(false);
+  }, [fetchApi, filtro]);
 
-      let respondidos = 0;
-      for (const f of arr) {
-        const enviadoMs = new Date(f.enviado_em).getTime();
-        const limite48h = enviadoMs + 48 * 60 * 60 * 1000;
-        const msgs = msgsBySession.get(f.chat_lid as string) || [];
-        if (msgs.some(ts => {
-          const t = new Date(ts).getTime();
-          return t > enviadoMs && t < limite48h;
-        })) respondidos++;
-      }
+  // Carregar status do worker
+  const loadWorkerStatus = useCallback(async () => {
+    const { data: response } = await fetchApi<{
+      success: boolean;
+      data: WorkerStatus;
+    }>('/api/followups/worker-status');
 
-      return {
-        total: arr.length,
-        respondidos,
-        taxa_pct: Math.round((respondidos / arr.length) * 1000) / 10,
-      };
-    };
+    if (response?.success) {
+      setWorkerStatus(response.data);
+    }
+  }, [fetchApi]);
 
-    const taxa7d = await calcularTaxa(ha7d);
-    const taxa30d = await calcularTaxa(ha30d);
+  // Carregar ao montar
+  useEffect(() => {
+    loadFollowups();
+    loadWorkerStatus();
+  }, [loadFollowups, loadWorkerStatus]);
 
-    // ============================================
-    // 6. PRÓXIMA RODADA (calculada via schedule)
-    // ============================================
-    const proximaRodada = calcularProximaRodada();
+  // Auto-refresh do worker status a cada 30s (mais rápido pra ver mudanças)
+  useEffect(() => {
+    const interval = setInterval(() => {
+      loadWorkerStatus();
+    }, 30000);
+    return () => clearInterval(interval);
+  }, [loadWorkerStatus]);
 
-    // ============================================
-    // 7. PRÓXIMOS 7 DIAS (pendentes futuros)
-    // ============================================
-    const em7d = new Date(agora.getTime() + 7 * 24 * 60 * 60 * 1000).toISOString();
-    const { count: prox7d } = await client
-      .from('tatiane_followups')
-      .select('*', { count: 'exact', head: true })
-      .eq('status', 'pendente')
-      .gte('data_agendada', agora.toISOString())
-      .lte('data_agendada', em7d);
-
-    // ============================================
-    // 8. ENVIADOS HOJE (em horário Salvador)
-    // ============================================
-    const partes = new Intl.DateTimeFormat('en-CA', {
-      timeZone: TZ,
-      year: 'numeric', month: '2-digit', day: '2-digit',
-    }).formatToParts(new Date());
-    const ano = partes.find(p => p.type === 'year')?.value;
-    const mes = partes.find(p => p.type === 'month')?.value;
-    const dia = partes.find(p => p.type === 'day')?.value;
-    const inicioDiaSalvador = `${ano}-${mes}-${dia}T03:00:00.000Z`;
-
-    const { count: enviadosHoje } = await client
-      .from('tatiane_followups')
-      .select('*', { count: 'exact', head: true })
-      .eq('status', 'concluido')
-      .gte('enviado_em', inicioDiaSalvador);
-
-    return NextResponse.json({
-      success: true,
-      data: {
-        // KPIs principais
-        total_pendentes: totalPendentes || 0,
-        atrasados: atrasados || 0,
-        enviados_hoje: enviadosHoje || 0,
-        prox_7_dias: prox7d || 0,
-
-        // Card "Tatiane IA"
-        ultima_rodada: ultimaRodada ? {
-          inicio: ultimaRodada.inicio,
-          enviados: ultimaRodada.total,
-        } : null,
-        proxima_rodada: proximaRodada,
-        ultimo_envio: ultimoEnvio,
-
-        // Métricas de período
-        enviados_24h: enviados24h || 0,
-        enviados_7d: enviados7d || 0,
-        taxa_resposta_7d: taxa7d,
-        taxa_resposta_30d: taxa30d,
-
-        // Histórico
-        historico_rodadas: rodadas.map(r => ({
-          inicio: r.inicio,
-          enviados: r.total,
-        })),
-
-        // Meta
-        timestamp: agora.toISOString(),
-        schedule: 'a cada 30 min, 8h-20h Salvador',
-      },
+  // Concluir follow-up
+  const concluirFollowup = async (id: number) => {
+    const { error } = await fetchApi(`/api/followups/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ acao: 'concluir' }),
     });
-  } catch (error: any) {
-    console.error('[followups/worker-status] Erro:', error);
-    return NextResponse.json(
-      { error: error.message, success: false },
-      { status: 500 }
+
+    if (error) {
+      setError(error);
+    } else {
+      loadFollowups();
+    }
+  };
+
+  // Cancelar follow-up
+  const cancelarFollowup = async (id: number) => {
+    if (!confirm('Cancelar este follow-up?')) return;
+
+    const { error } = await fetchApi(`/api/followups/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ acao: 'cancelar' }),
+    });
+
+    if (error) {
+      setError(error);
+    } else {
+      loadFollowups();
+    }
+  };
+
+  // Abrir chat
+  const abrirChat = (leadId: number) => {
+    router.push(`/chat/${leadId}`);
+  };
+
+  // Formatar data
+  const formatarData = (data: string) => {
+    return format(new Date(data + 'T12:00:00'), "dd 'de' MMM", { locale: ptBR });
+  };
+
+  // Badge de situação
+  const getSituacaoBadge = (situacao: string) => {
+    switch (situacao) {
+      case 'atrasado':
+        return (
+          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-700">
+            <AlertCircle className="w-3 h-3" />
+            Atrasado
+          </span>
+        );
+      case 'hoje':
+        return (
+          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-yellow-100 text-yellow-700">
+            <Clock className="w-3 h-3" />
+            Hoje
+          </span>
+        );
+      case 'futuro':
+        return (
+          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-700">
+            <Calendar className="w-3 h-3" />
+            {formatarData(followups.find(f => f.situacao === situacao)?.data_agendada || '')}
+          </span>
+        );
+      default:
+        return null;
+    }
+  };
+
+  if (isLoading) {
+    return (
+      <div className="h-full flex items-center justify-center">
+        <Loader2 className="w-8 h-8 animate-spin text-blue-600" />
+      </div>
     );
   }
+
+  return (
+    <div className="p-4 lg:p-6 min-h-screen bg-gray-50">
+      {/* Header */}
+      <div className="mb-6 flex flex-col sm:flex-row sm:items-center gap-4">
+        <div className="flex-1">
+          <h1 className="text-2xl font-bold text-gray-900 flex items-center gap-2">
+            <Clock className="w-7 h-7 text-blue-600" />
+            Follow-ups
+          </h1>
+          <p className="text-gray-600">Acompanhamento de leads pendentes</p>
+        </div>
+
+        <button
+          onClick={() => { loadFollowups(); loadWorkerStatus(); }}
+          disabled={isRefreshing}
+          className="btn-secondary flex items-center gap-2"
+        >
+          <RefreshCw className={clsx('w-4 h-4', isRefreshing && 'animate-spin')} />
+          <span>Atualizar</span>
+        </button>
+      </div>
+
+      {/* Erro */}
+      {error && (
+        <div className="card mb-4 p-4 bg-red-50 border-red-200">
+          <div className="flex items-center gap-2 text-red-600">
+            <AlertCircle className="w-5 h-5" />
+            <span>{error}</span>
+          </div>
+        </div>
+      )}
+
+      {/* ═══════════════════════════════════════════════
+          CARD TATIANE IA — Status do Worker (5 KPIs)
+      ═══════════════════════════════════════════════ */}
+      <div className="card mb-4 p-5 bg-gradient-to-br from-purple-50 via-white to-blue-50 border-purple-100">
+        <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
+          <div className="flex items-center gap-2">
+            <Sparkles className="w-5 h-5 text-purple-600" />
+            <h2 className="text-base font-semibold text-gray-900">Tatiane IA — Worker de Follow-ups</h2>
+          </div>
+          {workerStatus?.schedule && (
+            <span className="text-xs text-gray-500 font-mono">{workerStatus.schedule}</span>
+          )}
+        </div>
+
+        {workerStatus ? (
+          <>
+            {/* 5 KPIs em uma linha */}
+            <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
+              <KpiTatiane
+                cor="purple"
+                icone={<MessageCircle className="w-4 h-4" />}
+                titulo="Total Pendentes"
+                valor={workerStatus.total_pendentes.toLocaleString('pt-BR')}
+                subtitulo={workerStatus.atrasados > 0 ? `⚠ ${workerStatus.atrasados} atrasados` : 'em dia'}
+                subtituloCor={workerStatus.atrasados > 0 ? 'red' : 'green'}
+              />
+              <KpiTatiane
+                cor="blue"
+                icone={<Activity className="w-4 h-4" />}
+                titulo="Última Rodada"
+                valor={
+                  workerStatus.ultima_rodada
+                    ? `${workerStatus.ultima_rodada.enviados} env`
+                    : '—'
+                }
+                subtitulo={
+                  workerStatus.ultima_rodada
+                    ? safeFormatDistanceToNow(workerStatus.ultima_rodada.inicio)
+                    : 'sem rodada recente'
+                }
+              />
+              <KpiTatiane
+                cor="amber"
+                icone={<Timer className="w-4 h-4" />}
+                titulo="Próxima Rodada"
+                valor={safeFormatTime(workerStatus.proxima_rodada)}
+                subtitulo={safeFormatDistanceToNow(workerStatus.proxima_rodada)}
+              />
+              <KpiTatiane
+                cor="green"
+                icone={<Send className="w-4 h-4" />}
+                titulo="Enviados 24h"
+                valor={workerStatus.enviados_24h.toLocaleString('pt-BR')}
+                subtitulo={`${workerStatus.enviados_7d} em 7 dias`}
+              />
+              <KpiTatiane
+                cor="indigo"
+                icone={<TrendingUp className="w-4 h-4" />}
+                titulo="Taxa Resposta 7d"
+                valor={`${workerStatus.taxa_resposta_7d.taxa_pct}%`}
+                subtitulo={`${workerStatus.taxa_resposta_7d.respondidos}/${workerStatus.taxa_resposta_7d.total} responderam`}
+              />
+            </div>
+
+            {/* Histórico das últimas rodadas */}
+            {workerStatus.historico_rodadas.length > 0 && (
+              <div className="mt-4 pt-4 border-t border-purple-100">
+                <p className="text-xs font-semibold text-gray-600 mb-2 uppercase tracking-wide">
+                  Últimas {workerStatus.historico_rodadas.length} rodadas
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  {workerStatus.historico_rodadas.map((r, i) => (
+                    <div
+                      key={i}
+                      className={clsx(
+                        'flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs',
+                        i === 0 ? 'bg-purple-100 text-purple-900 font-semibold' : 'bg-gray-100 text-gray-700'
+                      )}
+                    >
+                      <span className="font-mono">{safeFormatTime(r.inicio)}</span>
+                      <span className="text-gray-400">·</span>
+                      <span>{r.enviados} enviados</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </>
+        ) : (
+          <div className="flex items-center justify-center py-6 text-gray-400">
+            <Loader2 className="w-5 h-5 animate-spin mr-2" />
+            Carregando status do worker...
+          </div>
+        )}
+      </div>
+
+      {/* ═══════════════════════════════════════════════
+          CARDS DE FILTRO (lista da fila)
+      ═══════════════════════════════════════════════ */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+        <button
+          onClick={() => setFiltro('atrasado')}
+          className={clsx(
+            'card p-4 text-left transition-all',
+            filtro === 'atrasado' ? 'ring-2 ring-red-500' : 'hover:shadow-md'
+          )}
+        >
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 bg-red-100 rounded-xl flex items-center justify-center">
+              <AlertCircle className="w-5 h-5 text-red-600" />
+            </div>
+            <div>
+              <p className="text-2xl font-bold text-red-600">{contagem.atrasados}</p>
+              <p className="text-sm text-gray-500">Atrasados</p>
+            </div>
+          </div>
+        </button>
+
+        <button
+          onClick={() => setFiltro('hoje')}
+          className={clsx(
+            'card p-4 text-left transition-all',
+            filtro === 'hoje' ? 'ring-2 ring-yellow-500' : 'hover:shadow-md'
+          )}
+        >
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 bg-yellow-100 rounded-xl flex items-center justify-center">
+              <Clock className="w-5 h-5 text-yellow-600" />
+            </div>
+            <div>
+              <p className="text-2xl font-bold text-yellow-600">{contagem.hoje}</p>
+              <p className="text-sm text-gray-500">Hoje</p>
+            </div>
+          </div>
+        </button>
+
+        <button
+          onClick={() => setFiltro('futuro')}
+          className={clsx(
+            'card p-4 text-left transition-all',
+            filtro === 'futuro' ? 'ring-2 ring-blue-500' : 'hover:shadow-md'
+          )}
+        >
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 bg-blue-100 rounded-xl flex items-center justify-center">
+              <Calendar className="w-5 h-5 text-blue-600" />
+            </div>
+            <div>
+              <p className="text-2xl font-bold text-blue-600">{contagem.futuro}</p>
+              <p className="text-sm text-gray-500">Próximos</p>
+            </div>
+          </div>
+        </button>
+
+        <button
+          onClick={() => setFiltro('todos')}
+          className={clsx(
+            'card p-4 text-left transition-all',
+            filtro === 'todos' ? 'ring-2 ring-gray-500' : 'hover:shadow-md'
+          )}
+        >
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 bg-gray-100 rounded-xl flex items-center justify-center">
+              <MessageCircle className="w-5 h-5 text-gray-600" />
+            </div>
+            <div>
+              <p className="text-2xl font-bold text-gray-600">{contagem.total}</p>
+              <p className="text-sm text-gray-500">Total</p>
+            </div>
+          </div>
+        </button>
+      </div>
+
+      {/* Lista de follow-ups */}
+      <div className="space-y-3">
+        {followups.length === 0 ? (
+          <div className="card p-8 text-center">
+            <Clock className="w-12 h-12 text-gray-300 mx-auto mb-4" />
+            <p className="text-gray-500">Nenhum follow-up pendente</p>
+            <p className="text-sm text-gray-400 mt-1">
+              Os follow-ups são criados automaticamente quando você acessa esta página
+            </p>
+          </div>
+        ) : (
+          followups.map((followup) => (
+            <div
+              key={followup.id}
+              className={clsx(
+                'card p-4 border-l-4',
+                followup.situacao === 'atrasado' && 'border-l-red-500 bg-red-50/50',
+                followup.situacao === 'hoje' && 'border-l-yellow-500 bg-yellow-50/50',
+                followup.situacao === 'futuro' && 'border-l-blue-500'
+              )}
+            >
+              <div className="flex items-start gap-4">
+                {/* Avatar */}
+                <div className="w-10 h-10 bg-gray-200 rounded-full flex items-center justify-center flex-shrink-0">
+                  <User className="w-5 h-5 text-gray-600" />
+                </div>
+
+                {/* Info */}
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 mb-1">
+                    <span className="font-medium text-gray-900">
+                      {followup.dados_cliente?.nomewpp || 'Sem nome'}
+                    </span>
+                    {getSituacaoBadge(followup.situacao)}
+                    {followup.tipo === 'automatico' && (
+                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-purple-100 text-purple-700">
+                        <Zap className="w-3 h-3" />
+                        Auto
+                      </span>
+                    )}
+                  </div>
+
+                  <div className="flex items-center gap-4 text-sm text-gray-500 mb-2">
+                    <span className="flex items-center gap-1">
+                      <Phone className="w-3 h-3" />
+                      {formatPhone(followup.dados_cliente?.telefone || '')}
+                    </span>
+                    {followup.dados_cliente?.regiao && (
+                      <span className="flex items-center gap-1">
+                        <MapPin className="w-3 h-3" />
+                        {followup.dados_cliente.regiao}
+                      </span>
+                    )}
+                    <span className="flex items-center gap-1">
+                      <Calendar className="w-3 h-3" />
+                      {formatarData(followup.data_agendada)}
+                    </span>
+                  </div>
+
+                  {/* Motivo */}
+                  <p className="text-sm text-gray-700 font-medium">
+                    📋 {followup.motivo}
+                  </p>
+
+                  {/* Notas */}
+                  {followup.notas && (
+                    <p className="text-sm text-gray-500 mt-1">
+                      💬 {followup.notas}
+                    </p>
+                  )}
+
+                  {/* Sequência */}
+                  {followup.sequencia > 1 && (
+                    <p className="text-xs text-gray-400 mt-1">
+                      {followup.sequencia}º follow-up
+                    </p>
+                  )}
+                </div>
+
+                {/* Ações */}
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => abrirChat(followup.lead_id)}
+                    className="p-2 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
+                    title="Abrir chat"
+                  >
+                    <MessageCircle className="w-5 h-5" />
+                  </button>
+                  <button
+                    onClick={() => concluirFollowup(followup.id)}
+                    className="p-2 text-green-600 hover:bg-green-50 rounded-lg transition-colors"
+                    title="Concluir"
+                  >
+                    <CheckCircle className="w-5 h-5" />
+                  </button>
+                  <button
+                    onClick={() => cancelarFollowup(followup.id)}
+                    className="p-2 text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+                    title="Cancelar"
+                  >
+                    <XCircle className="w-5 h-5" />
+                  </button>
+                  <button
+                    onClick={() => abrirChat(followup.lead_id)}
+                    className="p-2 text-gray-400 hover:bg-gray-100 rounded-lg transition-colors"
+                  >
+                    <ChevronRight className="w-5 h-5" />
+                  </button>
+                </div>
+              </div>
+            </div>
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════
+// COMPONENTE: KpiTatiane (mini-card do worker)
+// ═══════════════════════════════════════════════
+function KpiTatiane({
+  cor,
+  icone,
+  titulo,
+  valor,
+  subtitulo,
+  subtituloCor,
+}: {
+  cor: 'purple' | 'blue' | 'green' | 'amber' | 'red' | 'indigo';
+  icone: React.ReactNode;
+  titulo: string;
+  valor: string | number;
+  subtitulo?: string;
+  subtituloCor?: 'red' | 'green' | 'gray';
+}) {
+  const coresMap = {
+    purple: { bg: 'bg-purple-100', text: 'text-purple-700', icon: 'text-purple-600' },
+    blue: { bg: 'bg-blue-100', text: 'text-blue-700', icon: 'text-blue-600' },
+    green: { bg: 'bg-green-100', text: 'text-green-700', icon: 'text-green-600' },
+    amber: { bg: 'bg-amber-100', text: 'text-amber-700', icon: 'text-amber-600' },
+    red: { bg: 'bg-red-100', text: 'text-red-700', icon: 'text-red-600' },
+    indigo: { bg: 'bg-indigo-100', text: 'text-indigo-700', icon: 'text-indigo-600' },
+  };
+  const c = coresMap[cor];
+  const subColor = subtituloCor === 'red' ? 'text-red-600' : subtituloCor === 'green' ? 'text-green-600' : 'text-gray-500';
+
+  return (
+    <div className="bg-white border border-gray-200 rounded-lg p-3 hover:shadow-sm transition-shadow">
+      <div className="flex items-center justify-between mb-1.5">
+        <span className="text-xs text-gray-600 uppercase tracking-wide font-medium leading-tight">
+          {titulo}
+        </span>
+        <div className={clsx('w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0', c.bg, c.icon)}>
+          {icone}
+        </div>
+      </div>
+      <p className={clsx('text-xl font-bold leading-tight', c.text)}>{valor}</p>
+      {subtitulo && <p className={clsx('text-xs mt-0.5', subColor)}>{subtitulo}</p>}
+    </div>
+  );
+}
+
+export default function FollowupsPage() {
+  return (
+    <AuthLayout>
+      <FollowupsContent />
+    </AuthLayout>
+  );
 }
