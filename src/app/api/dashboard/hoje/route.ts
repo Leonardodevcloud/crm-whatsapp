@@ -74,15 +74,17 @@ export async function GET(req: NextRequest) {
       .lt('enviado_em', fimDia);
 
     // ============================================
-    // 3. LEADS ATIVADOS HOJE (mudaram pra finalizado hoje)
-    // Aproximação: stage='finalizado' E updated_at hoje
+    // 3. LEADS ATIVADOS HOJE
+    // Usa data_ativacao (campo específico) em vez de updated_at
+    // (updated_at mudaria toda vez que o lead recebe mensagem nova,
+    // gerando contagem incorreta de "ativados hoje")
     // ============================================
     const { count: leadsAtivadosHoje } = await client
       .from('dados_cliente')
       .select('*', { count: 'exact', head: true })
       .eq('stage', 'finalizado')
-      .gte('updated_at', inicioDia)
-      .lt('updated_at', fimDia);
+      .gte('data_ativacao', inicioDia)
+      .lt('data_ativacao', fimDia);
 
     // ============================================
     // 4. NOVOS LEADS HOJE
