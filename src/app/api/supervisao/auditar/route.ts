@@ -199,6 +199,34 @@ export async function POST(req: NextRequest) {
     });
   }
 
+  // 1.b. Carregar exceções ativas (regex que descartam flags)
+  // ============================================
+  const { data: excecoesRaw } = await client
+    .from('tatiane_supervisao_excecoes')
+    .select('id, regra_id, padrao_regex, nome')
+    .eq('ativa', true);
+
+  // Agrupa exceções por regra_id, pré-compiladas
+  const excecoesPorRegra = new Map<number, Array<{ id: number; nome: string; regex: RegExp }>>();
+  (excecoesRaw || []).forEach((e: any) => {
+    try {
+      const re = new RegExp(e.padrao_regex, 'i');
+      if (!excecoesPorRegra.has(e.regra_id)) excecoesPorRegra.set(e.regra_id, []);
+      excecoesPorRegra.get(e.regra_id)!.push({ id: e.id, nome: e.nome, regex: re });
+    } catch {
+      console.warn(`[auditar] Exceção #${e.id} com regex inválida, ignorando`);
+    }
+  });
+
+  // Helper: confere se mensagem casa com alguma exceção da regra
+  const mensagemCasaExcecao = (regraId: number, conteudo: string): { id: number; nome: string } | null => {
+    const excs = excecoesPorRegra.get(regraId) || [];
+    for (const exc of excs) {
+      if (exc.regex.test(conteudo)) return { id: exc.id, nome: exc.nome };
+    }
+    return null;
+  };
+
   // ============================================
   // 2. Carregar mensagens AI recentes (paginado)
   // ============================================
@@ -220,7 +248,7 @@ export async function POST(req: NextRequest) {
   mensagens = mensagens.slice(0, maxMensagens);
 
   // ============================================
-  // 3. Aplicar regras + filtrar aprovadas
+  // 3. Aplicar regras + filtrar aprovadas + filtrar exceções
   // ============================================
   // Carregar todas aprovações pra esses session_ids
   const sessionIds = Array.from(new Set(mensagens.map(m => m.session_id)));
@@ -234,12 +262,21 @@ export async function POST(req: NextRequest) {
   }
 
   const flagadas: MensagemFlagada[] = [];
+  let descartadasPorExcecao = 0;
   for (const msg of mensagens) {
     for (const regra of regras) {
       const trecho = aplicarRegra(regra, msg.content || '');
       if (trecho) {
         const flagKey = gerarFlagKey(msg.session_id, msg.created_at, regra.id);
         if (aprovacoesSet.has(flagKey)) continue; // já aprovada, pula
+
+        // Confere exceção
+        const excecao = mensagemCasaExcecao(regra.id, msg.content || '');
+        if (excecao) {
+          descartadasPorExcecao++;
+          continue;
+        }
+
         flagadas.push({
           flag_key: flagKey,
           session_id: msg.session_id,
@@ -334,6 +371,7 @@ export async function POST(req: NextRequest) {
       total_regras: regras.length,
       total_flags_brutas: flagadas.length,
       total_flags_analisadas: flagsParaIA.length,
+      descartadas_por_excecao: descartadasPorExcecao,
       truncado: flagadas.length > flagsParaIA.length,
       ia_disponivel: !!GEMINI_API_KEY && usarIA,
     },
