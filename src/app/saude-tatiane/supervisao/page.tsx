@@ -583,21 +583,50 @@ function ModalDesconsiderar({ flag, onClose, onSucesso }: {
   const [salvando, setSalvando] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
 
-  // Sugere um padrão baseado no trecho
+  // Escapa caracteres especiais de regex
+  const escapeRegex = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+  // Sugere um padrão regex baseado no trecho + contexto
   useEffect(() => {
-    if (flag.trecho_problema) {
-      // Pega contexto ao redor do trecho na mensagem
-      const trecho = flag.trecho_problema;
-      const idx = flag.conteudo.toLowerCase().indexOf(trecho.toLowerCase());
-      if (idx >= 0) {
-        const inicio = Math.max(0, idx - 30);
-        const fim = Math.min(flag.conteudo.length, idx + trecho.length + 30);
-        const contexto = flag.conteudo.slice(inicio, fim);
-        setPadrao(`(?i)sem.{0,5}${trecho}|sem v.nculo.{0,20}${trecho}`);
-        setDescricao(`Quando aparecer "${trecho}" no contexto: "${contexto.trim()}"`);
-        setNome(`"${trecho}" em contexto explicativo`);
-      }
+    if (!flag.trecho_problema) return;
+
+    const trecho = flag.trecho_problema.trim();
+    const trechoEscapado = escapeRegex(trecho);
+    const conteudo = flag.conteudo;
+    const idx = conteudo.toLowerCase().indexOf(trecho.toLowerCase());
+
+    if (idx < 0) {
+      setPadrao(trechoEscapado);
+      setNome(`"${trecho}" — caso isolado`);
+      return;
     }
+
+    // Pega ~40 chars antes do trecho pra detectar contexto
+    const inicio = Math.max(0, idx - 40);
+    const trechoAntes = conteudo.slice(inicio, idx).toLowerCase();
+    const fim = Math.min(conteudo.length, idx + trecho.length + 40);
+    const contextoVisivel = conteudo.slice(inicio, fim);
+
+    // Detecta padrão de negação ("sem X", "não X", "nunca X")
+    const negacaoMatch = trechoAntes.match(/(sem|n[aã]o|nunca|jamais)\s*$/);
+
+    let regexSugerida: string;
+    let nomeSugerido: string;
+
+    if (negacaoMatch) {
+      // Negação: gera regex que casa "sem CLT", "sem v[ií]nculo X", "não X" etc
+      const negacao = negacaoMatch[1];
+      regexSugerida = `(?:${negacao}|sem\\s+v[ií]nculo)\\s+${trechoEscapado}`;
+      nomeSugerido = `"${negacao} ${trecho}" — uso correto (negando)`;
+    } else {
+      // Sem negação: usa só o trecho com word boundary
+      regexSugerida = `\\b${trechoEscapado}\\b`;
+      nomeSugerido = `"${trecho}" — contexto específico`;
+    }
+
+    setPadrao(regexSugerida);
+    setNome(nomeSugerido);
+    setDescricao(`Quando aparecer no contexto: "${contextoVisivel.trim()}"`);
   }, [flag]);
 
   const salvar = async () => {
@@ -661,8 +690,11 @@ function ModalDesconsiderar({ flag, onClose, onSucesso }: {
           <div>
             <label className="text-xs font-semibold text-gray-700">Padrão regex</label>
             <input value={padrao} onChange={e => setPadrao(e.target.value)} className="w-full border border-gray-300 rounded px-3 py-2 text-sm mt-1 font-mono"
-              placeholder="(?i)sem.{0,5}CLT|sem v.nculo" />
-            <p className="text-xs text-gray-500 mt-1">Regex JS. Quando casar com a mensagem, descarta a flag.</p>
+              placeholder="sem\s+CLT|sem\s+v[ií]nculo" />
+            <p className="text-xs text-gray-500 mt-1">
+              Regex JavaScript (case-insensitive). Quando casar na mensagem, a flag é descartada.
+              Exemplos: <code className="bg-gray-100 px-1 rounded">sem\s+CLT</code> · <code className="bg-gray-100 px-1 rounded">\bvalor\s+R\$</code>
+            </p>
           </div>
 
           <div>
