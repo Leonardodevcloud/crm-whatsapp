@@ -2,18 +2,19 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { Activity, ShieldCheck } from 'lucide-react';
+import { Activity, ShieldCheck, BookOpen } from 'lucide-react';
 import clsx from 'clsx';
 
 const SUB_TABS = [
   { href: '/dashboard', label: 'Visão geral', icon: Activity },
   { href: '/saude-tatiane/supervisao', label: 'Supervisão IA', icon: ShieldCheck },
+  { href: '/saude-tatiane/licoes', label: 'Lições & Versões', icon: BookOpen },
 ];
 
 export default function SaudeTatianeTabs() {
   const pathname = usePathname();
   return (
-    <div className="flex gap-1 mb-4 border-b border-gray-200 pb-1">
+    <div className="flex gap-1 mb-4 border-b border-gray-200 pb-1 flex-wrap">
       {SUB_TABS.map((t) => {
         const isActive = pathname === t.href || (t.href === '/dashboard' && pathname.startsWith('/dashboard'));
         return (
