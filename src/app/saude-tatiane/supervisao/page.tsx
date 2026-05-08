@@ -13,7 +13,6 @@ import {
   Activity,
   AlertCircle,
   AlertTriangle,
-  Check,
   CheckCircle2,
   Clock,
   Info,
@@ -66,7 +65,6 @@ function SupervisaoContent() {
   const [flags, setFlags] = useState<FlagEnriquecida[]>([]);
   const [meta, setMeta] = useState<any>(null);
   const [erro, setErro] = useState<string | null>(null);
-  const [aprovando, setAprovando] = useState<Set<string>>(new Set());
   const [expandidos, setExpandidos] = useState<Set<string>>(new Set());
   const [filtroSev, setFiltroSev] = useState<'todos' | 'info' | 'atencao' | 'critico'>('todos');
   const [showRegras, setShowRegras] = useState(false);
@@ -94,33 +92,6 @@ function SupervisaoContent() {
     }
     setAuditando(false);
   }, [fetchApi, horas, usarIA]);
-
-  const aprovar = async (flag: FlagEnriquecida) => {
-    setAprovando(prev => {
-      const ns = new Set(prev);
-      ns.add(flag.flag_key);
-      return ns;
-    });
-    const { error } = await fetchApi('/api/supervisao/aprovar', {
-      method: 'POST',
-      body: JSON.stringify({
-        flag_key: flag.flag_key,
-        session_id: flag.session_id,
-        mensagem_created_at: flag.mensagem_created_at,
-        regra_id: flag.regra.id,
-      }),
-    });
-    if (!error) {
-      setFlags(prev => prev.filter(f => f.flag_key !== flag.flag_key));
-    } else {
-      setErro(error);
-    }
-    setAprovando(prev => {
-      const ns = new Set(prev);
-      ns.delete(flag.flag_key);
-      return ns;
-    });
-  };
 
   const toggleExpand = (key: string) => {
     setExpandidos(prev => {
@@ -262,9 +233,7 @@ function SupervisaoContent() {
             key={f.flag_key}
             flag={f}
             expandido={expandidos.has(f.flag_key)}
-            aprovando={aprovando.has(f.flag_key)}
             onToggle={() => toggleExpand(f.flag_key)}
-            onAprovar={() => aprovar(f)}
             onDesconsiderar={() => setModalDescon(f)}
             onCorrigir={() => setModalCorrig(f)}
           />
@@ -320,12 +289,10 @@ function FiltroChip({ ativo, onClick, cor, label, count }: { ativo: boolean; onC
   );
 }
 
-function FlagCard({ flag, expandido, aprovando, onToggle, onAprovar, onDesconsiderar, onCorrigir }: {
+function FlagCard({ flag, expandido, onToggle, onDesconsiderar, onCorrigir }: {
   flag: FlagEnriquecida;
   expandido: boolean;
-  aprovando: boolean;
   onToggle: () => void;
-  onAprovar: () => void;
   onDesconsiderar: () => void;
   onCorrigir: () => void;
 }) {
@@ -402,27 +369,16 @@ function FlagCard({ flag, expandido, aprovando, onToggle, onAprovar, onDesconsid
 
             <div className="flex items-center gap-2 mt-3 flex-wrap">
               <button
-                onClick={onAprovar}
-                disabled={aprovando}
-                className="flex items-center gap-1.5 px-3 py-1.5 bg-white border border-green-300 text-green-700 rounded-lg text-xs font-medium hover:bg-green-50 disabled:opacity-50"
-                title="Esta flag está OK — só desconsiderar essa mensagem específica"
-              >
-                {aprovando ? <Loader2 className="w-3 h-3 animate-spin" /> : <Check className="w-3 h-3" />}
-                OK (essa msg)
-              </button>
-              <button
                 onClick={onDesconsiderar}
-                disabled={aprovando}
-                className="flex items-center gap-1.5 px-3 py-1.5 bg-white border border-amber-300 text-amber-700 rounded-lg text-xs font-medium hover:bg-amber-50 disabled:opacity-50"
-                title="Criar exceção: padrões similares no futuro também serão ignorados"
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-white border border-amber-300 text-amber-700 rounded-lg text-xs font-medium hover:bg-amber-50"
+                title="Criar exceção: mensagens com padrão similar serão ignoradas no futuro"
               >
                 <Filter className="w-3 h-3" />
                 Desconsiderar contexto
               </button>
               <button
                 onClick={onCorrigir}
-                disabled={aprovando}
-                className="flex items-center gap-1.5 px-3 py-1.5 bg-white border border-red-300 text-red-700 rounded-lg text-xs font-medium hover:bg-red-50 disabled:opacity-50"
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-white border border-red-300 text-red-700 rounded-lg text-xs font-medium hover:bg-red-50"
                 title="É problema real — escrever lição pra Tatiane"
               >
                 <GraduationCap className="w-3 h-3" />
