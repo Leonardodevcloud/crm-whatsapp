@@ -34,15 +34,9 @@ const ENRICHMENT_COOLDOWN_MIN = 30;      // Só re-enriquece se last_enriched_at
 // PRAZOS DE FOLLOW-UP
 // ============================================
 const PRAZOS = {
-  NOVO_SEM_MUDANCA: 3,
-  QUALIFICADO_SEM_FINALIZAR: 3,
-  APOS_FOLLOWUP_CONCLUIDO: 5,
+  // Worker da Tatiane usa NOVO_SEM_MUDANCA / QUALIFICADO_SEM_FINALIZAR diretamente lá.
+  // Aqui só interessa: quanto tempo de follow-up atrasado vira lead_morto.
   FOLLOWUP_NAO_ATENDIDO: 2,
-};
-
-const MOTIVOS = {
-  NOVO: 'Formalizar cadastro no aplicativo',
-  QUALIFICADO: 'Formalizar ativação',
 };
 
 // ============================================
@@ -333,12 +327,6 @@ export async function POST(req: NextRequest) {
             updated_at: new Date().toISOString(),
           };
 
-          // Se virou finalizado pela primeira vez, registra data_ativacao
-          // (evita sobrescrever se já tiver — pra leads ressuscitados manter primeira data)
-          if (novoStage === 'finalizado' && !lead.data_ativacao) {
-            updateStage.data_ativacao = new Date().toISOString();
-          }
-
           // Se era lead_morto e agora está ativo = ressuscitado
           if (lead.stage === 'lead_morto' && novoStage === 'finalizado') {
             updateStage.ressuscitado_em = new Date().toISOString();
@@ -375,7 +363,7 @@ export async function POST(req: NextRequest) {
     // (só no modo cron, não no modo evento)
     // ============================================
     if (!leadIdEspecifico) {
-      console.log('[CRON] Etapa 3: Automação de follow-ups...');
+      console.log('[CRON] Etapa 3: Manutenção de follow-ups (lead_morto + ressuscitar)...');
 
       const hoje = new Date();
       const hojeStr = hoje.toISOString().split('T')[0];
@@ -389,9 +377,9 @@ export async function POST(req: NextRequest) {
 
       for (const lead of leadsFollowup || []) {
         try {
-          // Buscar follow-ups do lead
+          // Buscar follow-ups do lead (tabela: tatiane_followups)
           const { data: followups } = await client
-            .from('followups')
+            .from('tatiane_followups')
             .select('*')
             .eq('lead_id', lead.id)
             .order('created_at', { ascending: false });
@@ -408,7 +396,7 @@ export async function POST(req: NextRequest) {
               await client.from('dados_cliente')
                 .update({ stage: 'lead_morto', updated_at: new Date().toISOString() })
                 .eq('id', lead.id);
-              await client.from('followups')
+              await client.from('tatiane_followups')
                 .update({ status: 'cancelado' })
                 .eq('id', followupPendente.id);
               resultado.etapa3_followups.mortos++;
@@ -420,50 +408,14 @@ export async function POST(req: NextRequest) {
             continue;
           }
 
-          // Sem follow-up pendente → verificar se precisa criar
-          const dataRef = new Date(lead.updated_at || lead.created_at);
-          const diasParado = Math.floor((hoje.getTime() - dataRef.getTime()) / (1000 * 60 * 60 * 24));
-
-          let deveCriar = false;
-          let motivo = '';
-
-          // Lead NOVO parado 3+ dias
-          if (lead.stage === 'novo' && diasParado >= PRAZOS.NOVO_SEM_MUDANCA) {
-            deveCriar = true;
-            motivo = MOTIVOS.NOVO;
-          }
-
-          // Lead QUALIFICADO parado 3+ dias
-          if (lead.stage === 'qualificado' && diasParado >= PRAZOS.QUALIFICADO_SEM_FINALIZAR) {
-            deveCriar = true;
-            motivo = MOTIVOS.QUALIFICADO;
-          }
-
-          // Follow-up concluído há 5+ dias e ainda não finalizou
-          if (ultimoConcluido && !followupPendente) {
-            const dataConclusao = new Date(ultimoConcluido.completed_at);
-            const diasDesdeConclusao = Math.floor((hoje.getTime() - dataConclusao.getTime()) / (1000 * 60 * 60 * 24));
-            if (diasDesdeConclusao >= PRAZOS.APOS_FOLLOWUP_CONCLUIDO) {
-              deveCriar = true;
-              motivo = lead.stage === 'novo' ? MOTIVOS.NOVO : MOTIVOS.QUALIFICADO;
-            }
-          }
-
-          if (deveCriar && motivo) {
-            const maxSeq = followups?.reduce((max: number, f: any) => Math.max(max, f.sequencia || 1), 0) || 0;
-            const dataFollowup = new Date(hoje);
-            dataFollowup.setDate(dataFollowup.getDate() + 1);
-
-            await client.from('followups').insert({
-              lead_id: lead.id,
-              data_agendada: dataFollowup.toISOString().split('T')[0],
-              motivo,
-              tipo: 'automatico',
-              sequencia: maxSeq + 1,
-            });
-            resultado.etapa3_followups.criados++;
-            console.log(`[CRON E3] Follow-up criado para lead ${lead.id}: "${motivo}"`);
-          }
+          // Sem follow-up pendente → NÃO criar mais nada aqui.
+          // Worker da Tatiane (followup.worker.js > processarFollowupsAutomaticos)
+          // é a fonte única de verdade pra criar/enviar follow-ups automáticos:
+          //  - Detecta leads parados 3+ dias
+          //  - Gera mensagem com IA
+          //  - Envia via Z-API
+          //  - Cria registro com status='concluido' direto
+          // Aqui no cron, só fazemos manutenção (lead_morto / ressuscitar).
         } catch (e: any) {
           resultado.etapa3_followups.erros++;
           console.error(`[CRON E3] Lead ${lead.id}:`, e.message);
@@ -481,7 +433,7 @@ export async function POST(req: NextRequest) {
       data: resultado,
       message: resultado.modo === 'evento'
         ? `Lead enriquecido em ${resultado.tempo_ms}ms`
-        : `CRON executado: ${resultado.etapa1_planilha.atualizados} enriquecidos, ${resultado.etapa2_tutts.atualizados} stages atualizados, ${resultado.etapa3_followups.criados} follow-ups criados`,
+        : `CRON executado: ${resultado.etapa1_planilha.atualizados} enriquecidos, ${resultado.etapa2_tutts.atualizados} stages atualizados, ${resultado.etapa3_followups.mortos} leads mortos, ${resultado.etapa3_followups.ressuscitados} ressuscitados`,
     });
 
   } catch (error: any) {
