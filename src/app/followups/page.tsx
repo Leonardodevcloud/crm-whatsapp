@@ -477,7 +477,7 @@ function FollowupsContent() {
             <Clock className="w-12 h-12 text-gray-300 mx-auto mb-4" />
             <p className="text-gray-500">Nenhum follow-up pendente</p>
             <p className="text-sm text-gray-400 mt-1">
-              Os follow-ups são criados automaticamente quando você acessa esta página
+              A Tatiane detecta leads parados automaticamente e envia mensagens conforme necessário
             </p>
           </div>
         ) : (
