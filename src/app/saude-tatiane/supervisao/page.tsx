@@ -27,6 +27,11 @@ import {
   X,
   ChevronDown,
   ChevronUp,
+  Filter,
+  GraduationCap,
+  BookOpen,
+  History,
+  RefreshCw,
 } from 'lucide-react';
 import clsx from 'clsx';
 
@@ -65,6 +70,8 @@ function SupervisaoContent() {
   const [expandidos, setExpandidos] = useState<Set<string>>(new Set());
   const [filtroSev, setFiltroSev] = useState<'todos' | 'info' | 'atencao' | 'critico'>('todos');
   const [showRegras, setShowRegras] = useState(false);
+  const [modalDescon, setModalDescon] = useState<FlagEnriquecida | null>(null);
+  const [modalCorrig, setModalCorrig] = useState<FlagEnriquecida | null>(null);
 
   const auditar = useCallback(async () => {
     setAuditando(true);
@@ -258,12 +265,34 @@ function SupervisaoContent() {
             aprovando={aprovando.has(f.flag_key)}
             onToggle={() => toggleExpand(f.flag_key)}
             onAprovar={() => aprovar(f)}
+            onDesconsiderar={() => setModalDescon(f)}
+            onCorrigir={() => setModalCorrig(f)}
           />
         ))}
       </div>
 
-      {/* MODAL DE REGRAS */}
+      {/* MODAIS */}
       {showRegras && <ModalRegras onClose={() => setShowRegras(false)} />}
+      {modalDescon && (
+        <ModalDesconsiderar
+          flag={modalDescon}
+          onClose={() => setModalDescon(null)}
+          onSucesso={() => {
+            setFlags(prev => prev.filter(f => f.flag_key !== modalDescon.flag_key));
+            setModalDescon(null);
+          }}
+        />
+      )}
+      {modalCorrig && (
+        <ModalCorrigir
+          flag={modalCorrig}
+          onClose={() => setModalCorrig(null)}
+          onSucesso={() => {
+            setFlags(prev => prev.filter(f => f.flag_key !== modalCorrig.flag_key));
+            setModalCorrig(null);
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -291,8 +320,14 @@ function FiltroChip({ ativo, onClick, cor, label, count }: { ativo: boolean; onC
   );
 }
 
-function FlagCard({ flag, expandido, aprovando, onToggle, onAprovar }: {
-  flag: FlagEnriquecida; expandido: boolean; aprovando: boolean; onToggle: () => void; onAprovar: () => void;
+function FlagCard({ flag, expandido, aprovando, onToggle, onAprovar, onDesconsiderar, onCorrigir }: {
+  flag: FlagEnriquecida;
+  expandido: boolean;
+  aprovando: boolean;
+  onToggle: () => void;
+  onAprovar: () => void;
+  onDesconsiderar: () => void;
+  onCorrigir: () => void;
 }) {
   const sev = flag.regra.severidade;
   const cores = {
@@ -370,9 +405,28 @@ function FlagCard({ flag, expandido, aprovando, onToggle, onAprovar }: {
                 onClick={onAprovar}
                 disabled={aprovando}
                 className="flex items-center gap-1.5 px-3 py-1.5 bg-white border border-green-300 text-green-700 rounded-lg text-xs font-medium hover:bg-green-50 disabled:opacity-50"
+                title="Esta flag está OK — só desconsiderar essa mensagem específica"
               >
                 {aprovando ? <Loader2 className="w-3 h-3 animate-spin" /> : <Check className="w-3 h-3" />}
-                Aprovar (não é problema)
+                OK (essa msg)
+              </button>
+              <button
+                onClick={onDesconsiderar}
+                disabled={aprovando}
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-white border border-amber-300 text-amber-700 rounded-lg text-xs font-medium hover:bg-amber-50 disabled:opacity-50"
+                title="Criar exceção: padrões similares no futuro também serão ignorados"
+              >
+                <Filter className="w-3 h-3" />
+                Desconsiderar contexto
+              </button>
+              <button
+                onClick={onCorrigir}
+                disabled={aprovando}
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-white border border-red-300 text-red-700 rounded-lg text-xs font-medium hover:bg-red-50 disabled:opacity-50"
+                title="É problema real — escrever lição pra Tatiane"
+              >
+                <GraduationCap className="w-3 h-3" />
+                Corrigir Tatiane
               </button>
               <button
                 onClick={onToggle}
@@ -552,6 +606,221 @@ function ModalRegras({ onClose }: { onClose: () => void }) {
               )}
             </>
           )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ============================================
+// MODAL DESCONSIDERAR (cria exceção regex)
+// ============================================
+function ModalDesconsiderar({ flag, onClose, onSucesso }: {
+  flag: FlagEnriquecida;
+  onClose: () => void;
+  onSucesso: () => void;
+}) {
+  const { fetchApi } = useApi();
+  const [nome, setNome] = useState('');
+  const [padrao, setPadrao] = useState('');
+  const [descricao, setDescricao] = useState('');
+  const [salvando, setSalvando] = useState(false);
+  const [erro, setErro] = useState<string | null>(null);
+
+  // Sugere um padrão baseado no trecho
+  useEffect(() => {
+    if (flag.trecho_problema) {
+      // Pega contexto ao redor do trecho na mensagem
+      const trecho = flag.trecho_problema;
+      const idx = flag.conteudo.toLowerCase().indexOf(trecho.toLowerCase());
+      if (idx >= 0) {
+        const inicio = Math.max(0, idx - 30);
+        const fim = Math.min(flag.conteudo.length, idx + trecho.length + 30);
+        const contexto = flag.conteudo.slice(inicio, fim);
+        setPadrao(`(?i)sem.{0,5}${trecho}|sem v.nculo.{0,20}${trecho}`);
+        setDescricao(`Quando aparecer "${trecho}" no contexto: "${contexto.trim()}"`);
+        setNome(`"${trecho}" em contexto explicativo`);
+      }
+    }
+  }, [flag]);
+
+  const salvar = async () => {
+    if (!nome.trim() || !padrao.trim()) return;
+    setSalvando(true); setErro(null);
+
+    // Valida regex
+    try { new RegExp(padrao, 'i'); }
+    catch (e: any) { setErro(`Regex inválida: ${e.message}`); setSalvando(false); return; }
+
+    const { error } = await fetchApi('/api/supervisao/desconsiderar', {
+      method: 'POST',
+      body: JSON.stringify({
+        regra_id: flag.regra.id,
+        nome: nome.trim(),
+        descricao: descricao.trim() || null,
+        padrao_regex: padrao.trim(),
+        flag_key_atual: flag.flag_key,
+        session_id: flag.session_id,
+        mensagem_created_at: flag.mensagem_created_at,
+      }),
+    });
+    setSalvando(false);
+    if (error) setErro(error);
+    else onSucesso();
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4" onClick={onClose}>
+      <div className="bg-white rounded-lg max-w-2xl w-full max-h-[90vh] overflow-hidden flex flex-col" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between p-4 border-b border-gray-200">
+          <h3 className="text-lg font-semibold text-gray-900 flex items-center gap-2">
+            <Filter className="w-5 h-5 text-amber-600" /> Desconsiderar este contexto
+          </h3>
+          <button onClick={onClose} className="p-1 hover:bg-gray-100 rounded"><X className="w-5 h-5" /></button>
+        </div>
+        <div className="overflow-y-auto p-4 flex-1 space-y-3">
+          <div className="bg-amber-50 border border-amber-200 rounded p-3 text-sm">
+            <p className="font-semibold text-amber-900 mb-1">Como funciona?</p>
+            <p className="text-amber-800 text-xs">
+              Você está dizendo que essa regra ({flag.regra.nome}) <strong>não deve disparar</strong> em
+              mensagens com o padrão abaixo. Toda mensagem futura que case com esse regex será
+              automaticamente desconsiderada para essa regra.
+            </p>
+          </div>
+
+          <div className="bg-gray-50 border border-gray-200 rounded p-3 text-xs">
+            <p className="font-semibold text-gray-700 mb-1">Mensagem original da Tatiane:</p>
+            <p className="text-gray-600 italic">{flag.conteudo.slice(0, 300)}{flag.conteudo.length > 300 ? '…' : ''}</p>
+            <p className="mt-2 text-gray-700">
+              <span className="font-semibold">Trecho que disparou:</span> <code className="bg-white px-1 rounded">{flag.trecho_problema}</code>
+            </p>
+          </div>
+
+          <div>
+            <label className="text-xs font-semibold text-gray-700">Nome da exceção</label>
+            <input value={nome} onChange={e => setNome(e.target.value)} className="w-full border border-gray-300 rounded px-3 py-2 text-sm mt-1"
+              placeholder="Ex: 'CLT' em contexto explicativo" />
+          </div>
+
+          <div>
+            <label className="text-xs font-semibold text-gray-700">Padrão regex</label>
+            <input value={padrao} onChange={e => setPadrao(e.target.value)} className="w-full border border-gray-300 rounded px-3 py-2 text-sm mt-1 font-mono"
+              placeholder="(?i)sem.{0,5}CLT|sem v.nculo" />
+            <p className="text-xs text-gray-500 mt-1">Regex JS. Quando casar com a mensagem, descarta a flag.</p>
+          </div>
+
+          <div>
+            <label className="text-xs font-semibold text-gray-700">Descrição (opcional)</label>
+            <textarea value={descricao} onChange={e => setDescricao(e.target.value)} rows={2} className="w-full border border-gray-300 rounded px-3 py-2 text-sm mt-1"
+              placeholder="Quando essa exceção se aplica?" />
+          </div>
+
+          {erro && <div className="text-sm text-red-600">{erro}</div>}
+        </div>
+        <div className="flex justify-end gap-2 p-4 border-t border-gray-200">
+          <button onClick={onClose} className="px-3 py-1.5 text-sm border border-gray-300 rounded hover:bg-gray-50">Cancelar</button>
+          <button onClick={salvar} disabled={salvando || !nome.trim() || !padrao.trim()}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-sm bg-amber-600 text-white rounded hover:bg-amber-700 disabled:bg-gray-300">
+            {salvando && <Loader2 className="w-3 h-3 animate-spin" />}
+            Criar exceção
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ============================================
+// MODAL CORRIGIR (cria correção pendente)
+// ============================================
+function ModalCorrigir({ flag, onClose, onSucesso }: {
+  flag: FlagEnriquecida;
+  onClose: () => void;
+  onSucesso: () => void;
+}) {
+  const { fetchApi } = useApi();
+  const [licao, setLicao] = useState('');
+  const [secao, setSecao] = useState<'regras_ouro' | 'fora_escopo' | 'fluxo' | 'outro'>('regras_ouro');
+  const [salvando, setSalvando] = useState(false);
+  const [erro, setErro] = useState<string | null>(null);
+
+  // Pré-popula com sugestão da IA se tiver
+  useEffect(() => {
+    if (flag.analise_ia?.sugestao) {
+      setLicao(flag.analise_ia.sugestao);
+    } else if (flag.analise_ia?.motivo) {
+      setLicao(`Não fazer: ${flag.analise_ia.motivo}`);
+    }
+  }, [flag]);
+
+  const salvar = async () => {
+    if (!licao.trim()) return;
+    setSalvando(true); setErro(null);
+    const { error } = await fetchApi('/api/supervisao/correcoes', {
+      method: 'POST',
+      body: JSON.stringify({
+        licao: licao.trim(),
+        secao,
+        flag_key: flag.flag_key,
+        session_id: flag.session_id,
+        mensagem_problematica: flag.conteudo,
+      }),
+    });
+    setSalvando(false);
+    if (error) setErro(error);
+    else onSucesso();
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4" onClick={onClose}>
+      <div className="bg-white rounded-lg max-w-2xl w-full max-h-[90vh] overflow-hidden flex flex-col" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between p-4 border-b border-gray-200">
+          <h3 className="text-lg font-semibold text-gray-900 flex items-center gap-2">
+            <GraduationCap className="w-5 h-5 text-red-600" /> Corrigir Tatiane
+          </h3>
+          <button onClick={onClose} className="p-1 hover:bg-gray-100 rounded"><X className="w-5 h-5" /></button>
+        </div>
+        <div className="overflow-y-auto p-4 flex-1 space-y-3">
+          <div className="bg-red-50 border border-red-200 rounded p-3 text-sm">
+            <p className="font-semibold text-red-900 mb-1">Importante</p>
+            <p className="text-red-800 text-xs">
+              Sua lição vai pra <strong>fila de correções pendentes</strong>. Ela só será aplicada
+              ao prompt da Tatiane quando você clicar em <strong>"Aplicar correções"</strong> na
+              aba <strong>Lições e Versões</strong>.
+            </p>
+          </div>
+
+          <div className="bg-gray-50 border border-gray-200 rounded p-3 text-xs">
+            <p className="font-semibold text-gray-700 mb-1">Tatiane disse (problema):</p>
+            <p className="text-gray-600 whitespace-pre-wrap">{flag.conteudo.slice(0, 400)}{flag.conteudo.length > 400 ? '…' : ''}</p>
+          </div>
+
+          <div>
+            <label className="text-xs font-semibold text-gray-700">Lição (regra clara em 1-2 linhas)</label>
+            <textarea value={licao} onChange={e => setLicao(e.target.value)} rows={3} className="w-full border border-gray-300 rounded px-3 py-2 text-sm mt-1"
+              placeholder='Ex: "NUNCA mencione valor R$ específico de corrida — diga apenas que varia conforme a entrega"' />
+          </div>
+
+          <div>
+            <label className="text-xs font-semibold text-gray-700">Onde inserir no prompt</label>
+            <select value={secao} onChange={e => setSecao(e.target.value as any)}
+              className="w-full border border-gray-300 rounded px-3 py-2 text-sm mt-1">
+              <option value="regras_ouro">Regras de Ouro (recomendado pra "nunca / sempre")</option>
+              <option value="fora_escopo">Fora de Escopo</option>
+              <option value="fluxo">Fluxo Obrigatório</option>
+              <option value="outro">Lições Aprendidas (seção nova)</option>
+            </select>
+          </div>
+
+          {erro && <div className="text-sm text-red-600">{erro}</div>}
+        </div>
+        <div className="flex justify-end gap-2 p-4 border-t border-gray-200">
+          <button onClick={onClose} className="px-3 py-1.5 text-sm border border-gray-300 rounded hover:bg-gray-50">Cancelar</button>
+          <button onClick={salvar} disabled={salvando || !licao.trim()}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-sm bg-red-600 text-white rounded hover:bg-red-700 disabled:bg-gray-300">
+            {salvando && <Loader2 className="w-3 h-3 animate-spin" />}
+            Adicionar à fila de correções
+          </button>
         </div>
       </div>
     </div>
