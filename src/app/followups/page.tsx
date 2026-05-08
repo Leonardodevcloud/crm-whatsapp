@@ -82,38 +82,41 @@ interface WorkerStatus {
 interface Followup {
   id: number;
   lead_id: number;
+  chat_lid: string | null;
   data_agendada: string;
   motivo: string;
-  notas: string | null;
+  mensagem: string | null;
   status: string;
   tipo: string;
   sequencia: number;
   created_at: string;
-  situacao: 'atrasado' | 'hoje' | 'futuro';
+  enviado_em: string | null;
+  situacao: 'atrasado' | 'hoje' | 'futuro' | 'concluido' | 'cancelado' | 'falha';
   dados_cliente: {
     id: number;
     nomewpp: string | null;
     telefone: string;
     stage: string;
     regiao: string | null;
-  };
+  } | null;
 }
 
 interface Contagem {
   atrasados: number;
   hoje: number;
   futuro: number;
+  concluidos: number;
   total: number;
 }
 
 function FollowupsContent() {
   const [followups, setFollowups] = useState<Followup[]>([]);
-  const [contagem, setContagem] = useState<Contagem>({ atrasados: 0, hoje: 0, futuro: 0, total: 0 });
+  const [contagem, setContagem] = useState<Contagem>({ atrasados: 0, hoje: 0, futuro: 0, concluidos: 0, total: 0 });
   const [workerStatus, setWorkerStatus] = useState<WorkerStatus | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [filtro, setFiltro] = useState<'todos' | 'atrasado' | 'hoje' | 'futuro'>('todos');
+  const [filtro, setFiltro] = useState<'todos' | 'atrasado' | 'hoje' | 'futuro' | 'concluido'>('todos');
 
   const { fetchApi } = useApi();
   const router = useRouter();
@@ -124,7 +127,10 @@ function FollowupsContent() {
     setError(null);
 
     const params = new URLSearchParams();
-    if (filtro !== 'todos') {
+    if (filtro === 'concluido') {
+      params.set('status', 'concluido');
+      params.set('dias', '7');
+    } else if (filtro !== 'todos') {
       params.set('situacao', filtro);
     }
 
@@ -468,6 +474,20 @@ function FollowupsContent() {
           Próximos
           <span className="ml-0.5 opacity-75">{contagem.futuro}</span>
         </button>
+        <button
+          onClick={() => setFiltro('concluido')}
+          className={clsx(
+            'inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium transition-all',
+            filtro === 'concluido'
+              ? 'bg-green-600 text-white'
+              : 'bg-green-50 text-green-700 hover:bg-green-100'
+          )}
+          title="Follow-ups enviados nos últimos 7 dias"
+        >
+          <CheckCircle className="w-3.5 h-3.5" />
+          Enviados (7d)
+          <span className="ml-0.5 opacity-75">{contagem.concluidos}</span>
+        </button>
       </div>
 
       {/* Lista de follow-ups */}
@@ -475,9 +495,13 @@ function FollowupsContent() {
         {followups.length === 0 ? (
           <div className="card p-8 text-center">
             <Clock className="w-12 h-12 text-gray-300 mx-auto mb-4" />
-            <p className="text-gray-500">Nenhum follow-up pendente</p>
+            <p className="text-gray-500">
+              {filtro === 'concluido' ? 'Nenhum follow-up enviado nos últimos 7 dias' : 'Nenhum follow-up pendente'}
+            </p>
             <p className="text-sm text-gray-400 mt-1">
-              A Tatiane detecta leads parados automaticamente e envia mensagens conforme necessário
+              {filtro === 'concluido'
+                ? 'Quando a Tatiane enviar mensagens, elas aparecem aqui com o conteúdo enviado'
+                : 'A Tatiane detecta leads parados automaticamente e envia mensagens conforme necessário'}
             </p>
           </div>
         ) : (
@@ -534,11 +558,15 @@ function FollowupsContent() {
                     📋 {followup.motivo}
                   </p>
 
-                  {/* Notas */}
-                  {followup.notas && (
-                    <p className="text-sm text-gray-500 mt-1">
-                      💬 {followup.notas}
-                    </p>
+                  {/* Mensagem enviada (quando concluído) */}
+                  {followup.mensagem && followup.status === 'concluido' && (
+                    <div className="mt-2 p-2 bg-green-50 border border-green-200 rounded text-sm text-gray-700">
+                      <div className="flex items-center gap-1 text-xs text-green-700 font-semibold mb-1">
+                        <CheckCircle className="w-3 h-3" />
+                        Mensagem enviada{followup.enviado_em ? ` em ${formatarData(followup.enviado_em)}` : ''}
+                      </div>
+                      <p className="whitespace-pre-wrap">{followup.mensagem}</p>
+                    </div>
                   )}
 
                   {/* Sequência */}
@@ -558,20 +586,24 @@ function FollowupsContent() {
                   >
                     <MessageCircle className="w-5 h-5" />
                   </button>
-                  <button
-                    onClick={() => concluirFollowup(followup.id)}
-                    className="p-2 text-green-600 hover:bg-green-50 rounded-lg transition-colors"
-                    title="Concluir"
-                  >
-                    <CheckCircle className="w-5 h-5" />
-                  </button>
-                  <button
-                    onClick={() => cancelarFollowup(followup.id)}
-                    className="p-2 text-red-600 hover:bg-red-50 rounded-lg transition-colors"
-                    title="Cancelar"
-                  >
-                    <XCircle className="w-5 h-5" />
-                  </button>
+                  {followup.status === 'pendente' && (
+                    <>
+                      <button
+                        onClick={() => concluirFollowup(followup.id)}
+                        className="p-2 text-green-600 hover:bg-green-50 rounded-lg transition-colors"
+                        title="Concluir"
+                      >
+                        <CheckCircle className="w-5 h-5" />
+                      </button>
+                      <button
+                        onClick={() => cancelarFollowup(followup.id)}
+                        className="p-2 text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+                        title="Cancelar"
+                      >
+                        <XCircle className="w-5 h-5" />
+                      </button>
+                    </>
+                  )}
                   <button
                     onClick={() => abrirChat(followup.lead_id)}
                     className="p-2 text-gray-400 hover:bg-gray-100 rounded-lg transition-colors"
