@@ -119,11 +119,6 @@ function ComboSelect({ value, options, onSelect, onAddNew, placeholder }: {
 function AlocacaoContent() {
   const [alocacoes, setAlocacoes] = useState<Alocacao[]>([]);
   const [kpis, setKpis] = useState<KPIs | null>(null);
-  // "Rodou" real: cruza os cod_prof das alocações com bi_entregas (mesma fonte
-  // do Analytics), independente do status da tabela. rodouReal = quantos
-  // rodaram; rodaramSet = cods que rodaram (pra destacar/depurar).
-  const [rodouReal, setRodouReal] = useState<number | null>(null);
-  const [rodaramSet, setRodaramSet] = useState<Set<string>>(new Set());
   const [clientes, setClientes] = useState<ClienteOption[]>([]);
   const [alocadores, setAlocadores] = useState<string[]>([]);
 
@@ -175,35 +170,6 @@ function AlocacaoContent() {
     }
     setIsLoading(false);
   }, [fetchApi, filtroCliente, filtroStatus, filtroAlocador, busca, mesFiltro, anoFiltro, page]);
-
-  // ── "Rodou" real: cruza cod_prof das alocações com bi_entregas (via backend) ──
-  // Independe do status da tabela de alocação. Usa o mês/ano do filtro como período.
-  useEffect(() => {
-    const codigos = Array.from(new Set(
-      (alocacoes || []).map(a => String(a.cod_prof || '').replace(/\D/g, '')).filter(Boolean)
-    ));
-    if (codigos.length === 0) { setRodouReal(0); setRodaramSet(new Set()); return; }
-
-    // Período = mês/ano selecionado (primeiro ao último dia)
-    const ini = `${anoFiltro}-${String(mesFiltro).padStart(2, '0')}-01`;
-    const ultimoDia = new Date(anoFiltro, mesFiltro, 0).getDate();
-    const fim = `${anoFiltro}-${String(mesFiltro).padStart(2, '0')}-${String(ultimoDia).padStart(2, '0')}`;
-
-    let vivo = true;
-    (async () => {
-      const { data } = await fetchApi('/api/alocacao/verificar-rodou', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ codigos, data_inicio: ini, data_fim: fim }),
-      });
-      if (!vivo) return;
-      if (data?.success) {
-        setRodouReal(data.em_operacao ?? 0);
-        setRodaramSet(new Set((data.rodaram || []).map((c: any) => String(c))));
-      }
-    })();
-    return () => { vivo = false; };
-  }, [alocacoes, mesFiltro, anoFiltro, fetchApi]);
 
   // ── Actions ──
   const importarSheet = async () => {
@@ -327,10 +293,12 @@ function AlocacaoContent() {
           {[
             { key: '',                label: 'Total',          valor: kpis.total,            bgIcon: 'bg-purple-100', txtIcon: 'text-purple-600', txtVal: 'text-purple-600', icon: Users },
             { key: 'nao_rodou',       label: 'Não Rodou',      valor: kpis.nao_rodou,        bgIcon: 'bg-red-100',    txtIcon: 'text-red-600',    txtVal: 'text-red-600',    icon: XCircle },
-            // "Rodou" = alocados que EFETIVAMENTE fizeram entrega no período
-            // (cruzamento com bi_entregas via backend — mesma fonte do Analytics).
-            // Não depende do status da tabela (que pode estar todo "Não Rodou").
-            { key: '__rodou',         label: 'Rodou',          valor: rodouReal == null ? '…' : rodouReal, bgIcon: 'bg-emerald-100', txtIcon: 'text-emerald-600', txtVal: 'text-emerald-600', icon: TrendingUp },
+            // "Rodou" = alocações que já fizeram ao menos uma entrega (tudo que
+            // não é "não rodou"). É o número à parte da alocação registrada:
+            // quantos dos que foram alocados efetivamente rodaram. Não é filtro
+            // de status (key '__rodou'), é métrica derivada — clicar filtra os
+            // que rodaram via filtroStatus especial tratado no fetch/lista.
+            { key: '__rodou',         label: 'Rodou',          valor: Math.max(0, (kpis.total || 0) - (kpis.nao_rodou || 0)), bgIcon: 'bg-emerald-100', txtIcon: 'text-emerald-600', txtVal: 'text-emerald-600', icon: TrendingUp },
             { key: 'em_operacao',     label: 'Em Operação',    valor: kpis.em_operacao,      bgIcon: 'bg-green-100',  txtIcon: 'text-green-600',  txtVal: 'text-green-600',  icon: CheckCircle },
             { key: 'possivel_churn',  label: 'Possível Churn', valor: kpis.possivel_churn,   bgIcon: 'bg-orange-100', txtIcon: 'text-orange-600', txtVal: 'text-orange-600', icon: TrendingDown },
             { key: 'churn',           label: 'Churn',          valor: kpis.churn,            bgIcon: 'bg-red-200',    txtIcon: 'text-red-800',    txtVal: 'text-red-800',    icon: AlertCircle },
