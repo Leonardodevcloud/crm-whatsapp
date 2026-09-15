@@ -6,7 +6,7 @@ import { useApi } from '@/lib/hooks';
 import {
   Users, Loader2, AlertCircle, Search, Plus, RefreshCw, Download, BarChart3,
   CheckCircle, XCircle, Clock, ChevronLeft, ChevronRight, Calendar,
-  TrendingDown, TrendingUp, ArrowUpCircle, Trash2, UserPlus,
+  TrendingDown, ArrowUpCircle, Trash2, UserPlus,
 } from 'lucide-react';
 import clsx from 'clsx';
 
@@ -289,30 +289,21 @@ function AlocacaoContent() {
 
       {/* KPIs */}
       {kpis && (
-        <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-3 mb-6">
+        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 mb-6">
           {[
             { key: '',                label: 'Total',          valor: kpis.total,            bgIcon: 'bg-purple-100', txtIcon: 'text-purple-600', txtVal: 'text-purple-600', icon: Users },
             { key: 'nao_rodou',       label: 'Não Rodou',      valor: kpis.nao_rodou,        bgIcon: 'bg-red-100',    txtIcon: 'text-red-600',    txtVal: 'text-red-600',    icon: XCircle },
-            // "Rodou" = alocações que já fizeram ao menos uma entrega (tudo que
-            // não é "não rodou"). É o número à parte da alocação registrada:
-            // quantos dos que foram alocados efetivamente rodaram. Não é filtro
-            // de status (key '__rodou'), é métrica derivada — clicar filtra os
-            // que rodaram via filtroStatus especial tratado no fetch/lista.
-            { key: '__rodou',         label: 'Rodou',          valor: Math.max(0, (kpis.total || 0) - (kpis.nao_rodou || 0)), bgIcon: 'bg-emerald-100', txtIcon: 'text-emerald-600', txtVal: 'text-emerald-600', icon: TrendingUp },
             { key: 'em_operacao',     label: 'Em Operação',    valor: kpis.em_operacao,      bgIcon: 'bg-green-100',  txtIcon: 'text-green-600',  txtVal: 'text-green-600',  icon: CheckCircle },
             { key: 'possivel_churn',  label: 'Possível Churn', valor: kpis.possivel_churn,   bgIcon: 'bg-orange-100', txtIcon: 'text-orange-600', txtVal: 'text-orange-600', icon: TrendingDown },
             { key: 'churn',           label: 'Churn',          valor: kpis.churn,            bgIcon: 'bg-red-200',    txtIcon: 'text-red-800',    txtVal: 'text-red-800',    icon: AlertCircle },
             { key: 'voltou_operacao', label: 'Voltou Op.',     valor: kpis.voltou_operacao,  bgIcon: 'bg-blue-100',   txtIcon: 'text-blue-600',   txtVal: 'text-blue-600',   icon: ArrowUpCircle },
           ].map(card => {
             const Icon = card.icon;
-            // "Rodou" é métrica derivada (não é status no backend) → não filtra,
-            // é só informativo. Os demais cards continuam filtrando por status.
-            const isDerivado = card.key === '__rodou';
-            const isActive = !isDerivado && filtroStatus === card.key;
+            const isActive = filtroStatus === card.key;
             return (
               <div key={card.key || 'total'}
-                onClick={isDerivado ? undefined : () => { setFiltroStatus(isActive ? '' : card.key); setPage(1); }}
-                className={clsx('card p-4 transition-all', isDerivado ? 'cursor-default' : 'cursor-pointer hover:shadow-md', isActive && 'ring-2 ring-purple-500 shadow-md')}>
+                onClick={() => { setFiltroStatus(isActive ? '' : card.key); setPage(1); }}
+                className={clsx('card p-4 cursor-pointer transition-all hover:shadow-md', isActive && 'ring-2 ring-purple-500 shadow-md')}>
                 <div className="flex items-center gap-3">
                   <div className={clsx('w-10 h-10 rounded-xl flex items-center justify-center', card.bgIcon)}>
                     <Icon className={clsx('w-5 h-5', card.txtIcon)} />
