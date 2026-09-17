@@ -111,7 +111,7 @@ function ConfigContatoInner() {
   };
 
   return (
-    <div className="max-w-7xl mx-auto px-4 py-6">{/* COL_MAIOR_V1 */}
+    <div className="max-w-5xl mx-auto px-4 py-6">
       <div className="flex items-center gap-3 mb-6">
         <div className="w-10 h-10 rounded-xl bg-purple-600 text-white flex items-center justify-center"><Send className="w-5 h-5" /></div>
         <div>
@@ -120,9 +120,9 @@ function ConfigContatoInner() {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start">
+      <div className="grid grid-cols-1 lg:grid-cols-5 gap-5 items-start">
         {/* ESQUERDA: form */}
-        <div className="lg:col-span-7">
+        <div className="lg:col-span-3">
           {carregando ? (
             <div className="flex items-center justify-center py-20 text-gray-500"><Loader2 className="w-6 h-6 animate-spin mr-2" /> Carregando...</div>
           ) : (
@@ -163,7 +163,7 @@ function ConfigContatoInner() {
         </div>
 
         {/* DIREITA: contatados */}
-        <div className="lg:col-span-5">
+        <div className="lg:col-span-2">
           <div className="bg-white rounded-2xl border border-gray-200 overflow-hidden">
             <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100">
               <div><div className="text-sm font-semibold text-gray-900">Contatados pela Tati</div><div className="text-xs text-gray-500 mt-0.5">Leads que já receberam o primeiro contato</div></div>
@@ -174,19 +174,19 @@ function ConfigContatoInner() {
               </div>
             </div>
             {resultadoRun && (<div className="px-5 py-2 text-xs text-gray-600 bg-purple-50 border-b border-purple-100">{resultadoRun}</div>)}
-            <div className="max-h-[72vh] overflow-auto">
+            <div className="max-h-[480px] overflow-auto">
               {carregandoLista ? (
                 <div className="flex items-center justify-center py-12 text-gray-400"><Loader2 className="w-5 h-5 animate-spin mr-2" /> Carregando...</div>
               ) : contatados.length === 0 ? (
                 <div className="flex flex-col items-center justify-center py-12 text-gray-400 text-sm"><MessageCircle className="w-6 h-6 mb-2 opacity-50" /> Nenhum lead contatado ainda.</div>
               ) : (
                 contatados.map((c) => (
-                  <div key={c.cod} className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
+                  <div key={c.cod} className="flex items-center justify-between px-5 py-3 border-b border-gray-50">
                     <div className="min-w-0">
-                      <div className="text-[15px] font-semibold text-gray-900 truncate">{c.nome || 'Sem nome'}</div>
-                      <div className="text-[13px] text-gray-500 mt-1">{formatFone(c.celular)}{c.regiao ? ` • ${c.regiao}${c.estado ? ' ' + c.estado : ''}` : ''}</div>
+                      <div className="text-sm font-medium text-gray-900 truncate">{c.nome || 'Sem nome'}</div>
+                      <div className="text-xs text-gray-500 mt-0.5">{formatFone(c.celular)}{c.regiao ? ` • ${c.regiao}${c.estado ? ' ' + c.estado : ''}` : ''}</div>
                     </div>
-                    <span className="text-sm font-semibold text-purple-700 bg-purple-50 rounded-lg px-3 py-1.5 flex-none ml-3">{c.cod}</span>
+                    <span className="text-[11px] font-semibold text-purple-700 bg-purple-50 rounded-md px-2 py-1 flex-none ml-2">{c.cod}</span>
                   </div>
                 ))
               )}
