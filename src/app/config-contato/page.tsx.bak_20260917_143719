@@ -62,8 +62,6 @@ function ConfigContatoInner() {
   const [contatados, setContatados] = useState<Contatado[]>([]);
   const [hoje, setHoje] = useState<number>(0);
   const [carregandoLista, setCarregandoLista] = useState(true);
-  const [rodando, setRodando] = useState(false);
-  const [resultadoRun, setResultadoRun] = useState<string | null>(null);
 
   const carregarConfig = useCallback(async () => {
     setCarregando(true); setErro(null);
@@ -94,18 +92,6 @@ function ConfigContatoInner() {
     });
     if (error) setErro(error); else { setSalvo(true); setTimeout(() => setSalvo(false), 3000); }
     setSalvando(false);
-  };
-
-  const rodarAgora = async () => {
-    setRodando(true); setResultadoRun(null);
-    const { data, error } = await fetchApi<any>('/api/tatiane-outbound-rodar', { method: 'POST', cache: 'no-store', body: '{}' });
-    if (error) { setResultadoRun('Erro: ' + error); }
-    else if (data && data.ok && data.resultado) {
-      const r = data.resultado;
-      setResultadoRun(`Rodada: ${r.sucesso ?? 0} enviados, ${r.pulados ?? 0} pulados${r.motivo ? ' (' + r.motivo + ')' : ''}`);
-    } else { setResultadoRun('Rodada executada.'); }
-    await carregarContatados();
-    setRodando(false);
   };
 
   return (
@@ -165,13 +151,11 @@ function ConfigContatoInner() {
           <div className="bg-white rounded-2xl border border-gray-200 overflow-hidden">
             <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100">
               <div><div className="text-sm font-semibold text-gray-900">Contatados pela Tati</div><div className="text-xs text-gray-500 mt-0.5">Leads que já receberam o primeiro contato</div></div>
-              <div className="flex items-center gap-2">{/* RODAR_AGORA_V1 */}
+              <div className="flex items-center gap-2">
                 <span className="text-xs font-semibold text-green-700 bg-green-50 border border-green-100 rounded-full px-2.5 py-0.5">hoje: {hoje}</span>
-                <button type="button" onClick={rodarAgora} disabled={rodando} className="inline-flex items-center gap-1 text-xs font-medium bg-purple-600 text-white rounded-lg px-2.5 py-1.5 hover:bg-purple-700 disabled:bg-gray-300" title="Disparar a Tati agora">{rodando ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Send className="w-3.5 h-3.5" />} Rodar agora</button>
                 <button type="button" onClick={carregarContatados} className="p-1.5 rounded-lg hover:bg-gray-100 text-gray-500" title="Atualizar"><RefreshCw className={`w-4 h-4 ${carregandoLista ? 'animate-spin' : ''}`} /></button>
               </div>
             </div>
-            {resultadoRun && (<div className="px-5 py-2 text-xs text-gray-600 bg-purple-50 border-b border-purple-100">{resultadoRun}</div>)}
             <div className="max-h-[480px] overflow-auto">
               {carregandoLista ? (
                 <div className="flex items-center justify-center py-12 text-gray-400"><Loader2 className="w-5 h-5 animate-spin mr-2" /> Carregando...</div>
