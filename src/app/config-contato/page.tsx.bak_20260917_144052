@@ -100,12 +100,10 @@ function ConfigContatoInner() {
     setRodando(true); setResultadoRun(null);
     const { data, error } = await fetchApi<any>('/api/tatiane-outbound-rodar', { method: 'POST', cache: 'no-store', body: '{}' });
     if (error) { setResultadoRun('Erro: ' + error); }
-    else if (data && data.iniciado) { setResultadoRun('Rodada iniciada em segundo plano. A lista atualiza conforme a Tati envia.'); }
     else if (data && data.ok && data.resultado) {
       const r = data.resultado;
       setResultadoRun(`Rodada: ${r.sucesso ?? 0} enviados, ${r.pulados ?? 0} pulados${r.motivo ? ' (' + r.motivo + ')' : ''}`);
     } else { setResultadoRun('Rodada executada.'); }
-    setTimeout(() => { carregarContatados(); }, 4000);
     await carregarContatados();
     setRodando(false);
   };
