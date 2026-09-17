@@ -1,79 +1,53 @@
 // ===========================================
-// API: /api/tatiane-outbound-config  (CONFIG_CONTATO_V1)
-// GET: le a config do contato automatico da Tatiane (singleton id=1)
-// PUT: atualiza { ativo, leads_por_dia, dias_apos_chegada }
-//
-// A mesma linha e lida pelo worker da Tatiane (outbound-d2.worker.js)
-// via conexao pg direta no mesmo banco (Supabase).
+// API: /api/tatiane-outbound-config  (CONFIG_CONTATO_V2)
+// Proxy para o tutts-backend -> /api/crm/outbound/config
+// (a config vive no Postgres do backend, NAO no Supabase).
+// GET: le a config | PUT: atualiza { ativo, leads_por_dia, dias_apos_chegada }
 // ===========================================
+
+export const dynamic = 'force-dynamic';
 
 import { NextRequest, NextResponse } from 'next/server';
 import { getUserFromHeader } from '@/lib/auth';
-import { supabase, supabaseAdmin } from '@/lib/supabase';
 
-const DEFAULTS = { id: 1, ativo: false, leads_por_dia: 20, dias_apos_chegada: 2 };
+const BI_API_URL = process.env.BI_API_URL || 'https://tutts-backend-production.up.railway.app';
+const CRM_SERVICE_KEY = process.env.CRM_SERVICE_KEY || '';
+
+async function proxy(method: string, body?: any) {
+  const url = `${BI_API_URL.replace(/\/$/, '')}/api/crm/outbound/config`;
+  const res = await fetch(url, {
+    method,
+    headers: {
+      'Content-Type': 'application/json',
+      ...(CRM_SERVICE_KEY ? { 'x-service-key': CRM_SERVICE_KEY } : {}),
+    },
+    ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+  });
+  const data = await res.json().catch(() => ({}));
+  return NextResponse.json(data, { status: res.status });
+}
 
 export async function GET(req: NextRequest) {
   const user = getUserFromHeader(req.headers.get('authorization'));
-  if (!user) {
-    return NextResponse.json({ error: 'Não autenticado', success: false }, { status: 401 });
-  }
-
+  if (!user) return NextResponse.json({ error: 'Não autenticado', success: false }, { status: 401 });
   try {
-    const client = supabaseAdmin || supabase;
-    const { data, error } = await client
-      .from('tatiane_outbound_config')
-      .select('id, ativo, leads_por_dia, dias_apos_chegada, updated_at, updated_by')
-      .eq('id', 1)
-      .maybeSingle();
-
-    if (error) throw error;
-    return NextResponse.json({ success: true, data: data || DEFAULTS });
+    return await proxy('GET');
   } catch (e: any) {
-    console.error('[tatiane-outbound-config][GET]', e.message);
     return NextResponse.json({ error: e.message, success: false }, { status: 500 });
   }
 }
 
 export async function PUT(req: NextRequest) {
   const user = getUserFromHeader(req.headers.get('authorization'));
-  if (!user) {
-    return NextResponse.json({ error: 'Não autenticado', success: false }, { status: 401 });
-  }
-
+  if (!user) return NextResponse.json({ error: 'Não autenticado', success: false }, { status: 401 });
   try {
-    const body = await req.json().catch(() => ({} as any));
-
-    const ativo = body.ativo === true || body.ativo === 'true';
-
-    let leadsPorDia = parseInt(body.leads_por_dia, 10);
-    let diasApos = parseInt(body.dias_apos_chegada, 10);
-    if (!Number.isFinite(leadsPorDia)) leadsPorDia = DEFAULTS.leads_por_dia;
-    if (!Number.isFinite(diasApos)) diasApos = DEFAULTS.dias_apos_chegada;
-    leadsPorDia = Math.max(0, Math.min(500, leadsPorDia));
-    diasApos = Math.max(0, Math.min(60, diasApos));
-
-    const client = supabaseAdmin || supabase;
-    const { data, error } = await client
-      .from('tatiane_outbound_config')
-      .upsert(
-        {
-          id: 1,
-          ativo,
-          leads_por_dia: leadsPorDia,
-          dias_apos_chegada: diasApos,
-          updated_at: new Date().toISOString(),
-          updated_by: (user as any)?.id ?? null,
-        },
-        { onConflict: 'id' }
-      )
-      .select('id, ativo, leads_por_dia, dias_apos_chegada, updated_at, updated_by')
-      .maybeSingle();
-
-    if (error) throw error;
-    return NextResponse.json({ success: true, data });
+    const body = await req.json().catch(() => ({}));
+    return await proxy('PUT', {
+      ativo: body?.ativo,
+      leads_por_dia: body?.leads_por_dia,
+      dias_apos_chegada: body?.dias_apos_chegada,
+    });
   } catch (e: any) {
-    console.error('[tatiane-outbound-config][PUT]', e.message);
     return NextResponse.json({ error: e.message, success: false }, { status: 500 });
   }
 }
