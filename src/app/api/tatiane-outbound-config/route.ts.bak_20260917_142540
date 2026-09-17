@@ -17,7 +17,6 @@ async function proxy(method: string, body?: any) {
   const url = `${BI_API_URL.replace(/\/$/, '')}/api/crm/outbound/config`;
   const res = await fetch(url, {
     method,
-    cache: 'no-store',
     headers: {
       'Content-Type': 'application/json',
       ...(CRM_SERVICE_KEY ? { 'x-service-key': CRM_SERVICE_KEY } : {}),

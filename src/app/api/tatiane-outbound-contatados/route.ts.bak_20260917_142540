@@ -21,7 +21,6 @@ export async function GET(req: NextRequest) {
     const url = `${BI_API_URL.replace(/\/$/, '')}/api/crm/outbound/contatados?limite=${encodeURIComponent(limite)}`;
     const res = await fetch(url, {
       method: 'GET',
-      cache: 'no-store',
       headers: { 'Content-Type': 'application/json', ...(CRM_SERVICE_KEY ? { 'x-service-key': CRM_SERVICE_KEY } : {}) },
     });
     const data = await res.json().catch(() => ({}));

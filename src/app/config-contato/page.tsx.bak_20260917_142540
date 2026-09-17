@@ -65,7 +65,7 @@ function ConfigContatoInner() {
 
   const carregarConfig = useCallback(async () => {
     setCarregando(true); setErro(null);
-    const { data, error } = await fetchApi<{ success: boolean; data: OutboundConfig }>('/api/tatiane-outbound-config', { cache: 'no-store' });
+    const { data, error } = await fetchApi<{ success: boolean; data: OutboundConfig }>('/api/tatiane-outbound-config');
     if (error) setErro(error);
     else if (data?.data) setCfg({
       ativo: !!data.data.ativo,
@@ -77,7 +77,7 @@ function ConfigContatoInner() {
 
   const carregarContatados = useCallback(async () => {
     setCarregandoLista(true);
-    const { data } = await fetchApi<{ success: boolean; hoje: number; data: Contatado[] }>('/api/tatiane-outbound-contatados?limite=50', { cache: 'no-store' });
+    const { data } = await fetchApi<{ success: boolean; hoje: number; data: Contatado[] }>('/api/tatiane-outbound-contatados?limite=50');
     if (data?.data) { setContatados(data.data); setHoje(Number(data.hoje) || 0); }
     setCarregandoLista(false);
   }, [fetchApi]);
