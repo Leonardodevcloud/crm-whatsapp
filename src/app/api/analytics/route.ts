@@ -769,11 +769,7 @@ export async function GET(req: NextRequest) {
     let totalAlocadosAnt = 0;
     let totalAlocados90d = 0;
     let alocacoesPorOperador: Record<string, number> = {};
-    // ALOCADOS_POR_OPERADOR_V1: cods que TEM alocacao (qualquer data).
-    // Usa todas as alocacoes, nao so as do periodo: um lead ativado no fim
-    // da janela costuma ser alocado dias depois, e restringir ao periodo
-    // faria a coluna Alocados ficar MENOR que Em Operacao — funil invertido.
-    const codsAlocadosSet = new Set<string>();
+
     const alocacoesPorDia: Record<string, number> = {};
     // Pré-zerar todas as chaves de dia do período (mesma janela de cadastros/ativados)
     Object.keys(cadastrosPorDia).forEach(k => { alocacoesPorDia[k] = 0; });
@@ -783,11 +779,6 @@ export async function GET(req: NextRequest) {
       }).then(r => r.json()).catch(() => ({ success: false, data: [] }));
 
       const todasAlocacoes: any[] = alocResp?.data || [];
-      todasAlocacoes.forEach((a: any) => {
-        if (a?.cod_prof !== undefined && a?.cod_prof !== null && a.cod_prof !== '') {
-          codsAlocadosSet.add(String(a.cod_prof).trim());
-        }
-      });
 
       // Filtrar alocações pelo período — usa DATA PREVISTA (quando foi planejada
       // a operação) com fallback pra created_at caso a alocação antiga não tenha
@@ -830,6 +821,14 @@ export async function GET(req: NextRequest) {
       console.log(`[Analytics] Alocações período (por data_prevista): ${totalAlocados} de ${todasAlocacoes.length} total`);
     } catch (err: any) { console.error('[Analytics] Erro alocações:', err.message); }
 
+    // ALOCADOS_POR_OPERADOR_V1: mapa de alocacoes por operador com chave
+    // normalizada (upper + trim), pra casar com o nome vindo das ativacoes.
+    const alocacoesPorOperadorNorm: Record<string, number> = {};
+    Object.entries(alocacoesPorOperador).forEach(([op, n]) => {
+      const k = String(op).trim().toUpperCase();
+      alocacoesPorOperadorNorm[k] = (alocacoesPorOperadorNorm[k] || 0) + (n as number);
+    });
+
     const qualidadePorOperador: Array<{
       operador: string;
       ativados: number;
@@ -841,10 +840,12 @@ export async function GET(req: NextRequest) {
     Object.entries(ativacoesPorOperadorDados).forEach(([op, d]) => {
       const ativados = d.leads.length;
       const emOp = d.leads.filter(c => codsEmOperacaoSet.has(c)).length;
-      // ALOCADOS_POR_OPERADOR_V1: dos leads que ESTE operador ativou, quantos
-      // chegaram a ser alocados. Nao e "quantas alocacoes ele fez" (isso e o
-      // quem_alocou, outra pessoa no fluxo) — aqui e etapa do funil dele.
-      const alocados = d.leads.filter(c => codsAlocadosSet.has(String(c).trim())).length;
+      // ALOCADOS_POR_OPERADOR_V1: quantas alocacoes ESTE operador fez no periodo
+      // (campo quem_alocou da tela de Alocacao). E produtividade dele na esteira,
+      // nao etapa do funil dos leads que ele ativou — por isso pode ser maior
+      // que "ativados" (ele aloca profissional que outro operador ativou).
+      // Chave normalizada: quem_alocou vem em caixa alta da UI, quem_ativou nem sempre.
+      const alocados = alocacoesPorOperadorNorm[String(op).trim().toUpperCase()] || 0;
       const taxaOp = ativados > 0 ? Math.round((emOp / ativados) * 100) : 0;
       const tempoMedio = d.deltasDias.length > 0
         ? Math.round((d.deltasDias.reduce((s, n) => s + n, 0) / d.deltasDias.length) * 10) / 10

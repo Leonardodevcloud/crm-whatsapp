@@ -1182,7 +1182,7 @@ function CardQualidadeOperador({
             <tr className="text-xs text-gray-500 uppercase tracking-wide border-b">
               <th className="text-left py-2 pr-2 font-medium">Operador</th>
               <th className="text-right py-2 px-2 font-medium">Ativados</th>
-              <th className="text-right py-2 px-2 font-medium" title="Dos ativados por este operador, quantos chegaram a ser alocados">Alocados</th>
+              <th className="text-right py-2 px-2 font-medium" title="Alocacoes feitas por este operador no periodo (campo Quem Alocou)">Alocados</th>
               <th className="text-right py-2 px-2 font-medium">Em Operação</th>
               <th className="text-right py-2 px-2 font-medium">Taxa</th>
               <th className="text-right py-2 pl-2 font-medium" title="Tempo médio em dias entre cadastro e ativação">Tempo médio</th>
