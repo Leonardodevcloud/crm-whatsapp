@@ -4,7 +4,7 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useAuth } from '@/lib/hooks';
 import {
-  MessageCircle, LayoutGrid, LogOut, User, Menu, X, BarChart3, Clock, ClipboardList, Activity, Send,
+  MessageCircle, LayoutGrid, LogOut, User, Menu, X, BarChart3, Clock, ClipboardList, Activity, Send, Bike,
 } from 'lucide-react';
 import { useState } from 'react';
 import clsx from 'clsx';
@@ -15,6 +15,7 @@ const navItems = [
   { href: '/followups', label: 'Follow-ups', icon: Clock },
   { href: '/config-contato', label: 'Contato Auto', icon: Send }, // CONFIG_CONTATO_V1
   { href: '/leads-nao-iniciados', label: 'Cadastros', icon: ClipboardList },
+  { href: '/disponiveis', label: 'Motoboys Disponíveis', icon: Bike }, // DISPONIVEIS_V1
   { href: '/analytics', label: 'Analytics', icon: BarChart3 },
 ];
 
