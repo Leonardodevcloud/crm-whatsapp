@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useAuth } from '@/lib/hooks';
-import { Columns3, ArrowLeft, BarChart3, Clock, ClipboardList, UserPlus, Activity, Send } from 'lucide-react';
+import { Columns3, ArrowLeft, BarChart3, Clock, ClipboardList, UserPlus, Activity, Send, Bike } from 'lucide-react';
 import clsx from 'clsx';
 
 const NAV_ITEMS = [
@@ -14,6 +14,7 @@ const NAV_ITEMS = [
   { href: '/config-contato', label: 'Contato Auto', icon: Send }, // CONFIG_CONTATO_V1
   { href: '/leads-nao-iniciados', label: 'Cadastros', icon: ClipboardList },
   { href: '/alocacao', label: 'Alocação', icon: UserPlus },
+  { href: '/disponiveis', label: 'Disponíveis', icon: Bike }, // DISPONIVEIS_V1
 ];
 
 export default function EmbedNav() {
