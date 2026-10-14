@@ -363,8 +363,27 @@ export async function POST(req: NextRequest) {
         resultado = await enriquecerComOperacao(alocadosList);
         console.log(`[drilldown] Alocados: total=${alocacoesPeriodo.length} codsUnicos=${codsAlocados.length} resultado=${resultado.length}`);
       } else if (stageLower.includes('em operação') || stageLower.includes('em operacao')) {
-        // Em operação: cruza ativados com bi_entregas via endpoint
-        resultado = await buscarEmOperacao(leadsPorAtivacao, dataInicioStr, dataFimStr);
+        // ANALYTICS_ALOCADOS_OPERACAO_V1: mesma regra do KPI —
+        // (ativados no período ∪ alocados no período) que fizeram entrega no período.
+        const alocH: Record<string, string> = { 'Content-Type': 'application/json' };
+        if (CRM_SERVICE_KEY) alocH['x-service-key'] = CRM_SERVICE_KEY;
+        const alocRespOp = await fetch(`${BACKEND_URL}/api/crm/alocacao?limit=50000&todos=true`, {
+          headers: alocH,
+          signal: AbortSignal.timeout(20_000),
+        }).then(r => r.ok ? r.json() : { data: [] }).catch(() => ({ data: [] }));
+        const indexLeadsOp = new Map(todosLeads.map(l => [String(l.cod), l]));
+        const candidatos = new Map<string, any>(leadsPorAtivacao.map(l => [String(l.cod), l]));
+        for (const a of (alocRespOp?.data || []) as any[]) {
+          const fonte = a.data_prevista || a.created_at;
+          if (!fonte || !dentroDoPeriodo(String(fonte))) continue;
+          const cod = String(a.cod_prof ?? '').replace(/\D/g, '');
+          if (!cod || candidatos.has(cod)) continue;
+          const lead = indexLeadsOp.get(cod);
+          candidatos.set(cod, lead
+            ? { ...lead, quem_alocou: a.quem_alocou || lead.quem_alocou || null }
+            : { cod, nome: a.nome_prof || null, telefone: null, celular: null, regiao: null, data_cadastro: null, data_ativacao: null, status_api: null, quem_ativou: null, quem_alocou: a.quem_alocou || null });
+        }
+        resultado = await buscarEmOperacao(Array.from(candidatos.values()), dataInicioStr, dataFimStr);
         // Enriquece com tags TP + data_lead + quem_alocou (mesmos campos do helper `enriquecer`)
         resultado = resultado.map(lead => {
           const info = obterInfoTP(lead.telefone);

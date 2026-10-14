@@ -27,15 +27,35 @@ export async function GET(req: NextRequest) {
     const dataLimiteInicio = new Date(dataInicioStr + 'T00:00:00');
     const dataLimiteFim = new Date(dataFimStr + 'T23:59:59');
 
-    // === Período anterior (mesma duração, deslocado pra trás) ===
-    // Ex: filtro 01/04 → 30/04 (30 dias) → anterior = 02/03 → 31/03
-    // A duração é calculada em dias exatos.
+    // === Período anterior — ANALYTICS_COMPARATIVO_V2 ===
+    // Compara os MESMOS DIAS do mês anterior (01/10→07/10 vs 01/09→07/09).
+    // Se o período inclui o futuro (ex.: 01/10→31/10 e hoje é 14/10), o
+    // comparativo usa só os dias já decorridos (01/09→14/09) — senão o mês
+    // atual pela metade seria comparado com o anterior inteiro.
+    // Mês fechado (01/09→30/09) → mês anterior fechado (01/08→31/08).
+    // Períodos > 31 dias voltam o nº de meses que o período cobre.
+    // (Antes: "mesma duração colada antes do início", com erro de +1 dia:
+    //  01/10→07/10 virava 23/09→30/09.)
     const msDia = 24 * 60 * 60 * 1000;
-    const duracaoDias = Math.max(1, Math.round((dataLimiteFim.getTime() - dataLimiteInicio.getTime()) / msDia) + 1);
-    const dataAntFim = new Date(dataLimiteInicio.getTime() - msDia); // dia anterior ao início
-    const dataAntInicio = new Date(dataAntFim.getTime() - (duracaoDias - 1) * msDia);
-    const dataAntInicioStr = dataAntInicio.toISOString().slice(0, 10);
-    const dataAntFimStr = dataAntFim.toISOString().slice(0, 10);
+    const hojeBahiaStr = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Bahia', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+    const atualFimEfetivoStr = (dataInicioStr <= hojeBahiaStr && dataFimStr > hojeBahiaStr) ? hojeBahiaStr : dataFimStr;
+    const partesData = (s: string) => s.split('-').map(Number) as [number, number, number];
+    const ultimoDiaDoMes = (y: number, m: number) => new Date(Date.UTC(y, m, 0)).getUTCDate(); // m = 1..12
+    const fmtData = (y: number, m: number, d: number) => `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+    const voltarMeses = (s: string, n: number, forcarFimDoMes: boolean) => {
+      let [y, m, d] = partesData(s);
+      m -= n;
+      while (m < 1) { m += 12; y--; }
+      const ud = ultimoDiaDoMes(y, m);
+      return fmtData(y, m, forcarFimDoMes ? ud : Math.min(d, ud));
+    };
+    const [yIni, mIni] = partesData(dataInicioStr);
+    const [yFimEf, mFimEf, dFimEf] = partesData(atualFimEfetivoStr);
+    const duracaoDias = Math.max(1, Math.round((Date.parse(atualFimEfetivoStr) - Date.parse(dataInicioStr)) / msDia) + 1);
+    const mesesVoltar = duracaoDias <= 31 ? 1 : (yFimEf - yIni) * 12 + (mFimEf - mIni) + 1;
+    const fimEhFimDoMes = dFimEf === ultimoDiaDoMes(yFimEf, mFimEf);
+    const dataAntInicioStr = voltarMeses(dataInicioStr, mesesVoltar, false);
+    const dataAntFimStr = voltarMeses(atualFimEfetivoStr, mesesVoltar, fimEhFimDoMes);
     const dentroDoPeriodoAnt = (d: string | null | undefined): boolean => {
       if (!d) return false;
       const dia = String(d).split('T')[0];
@@ -102,14 +122,25 @@ export async function GET(req: NextRequest) {
     // sobre leadsPorCadastro. Um lead pode ter cadastrado em março e ativado
     // em abril — com o filtro = abril, ele entra nos 250 ativados e deve entrar
     // também na estatística (delta de cadastro→ativação independe de quando cadastrou).
+    // ANALYTICS_VELOCIDADE_COORTE_V1: a velocidade passa a medir só a COORTE
+    // do período (cadastrou E ativou dentro do filtro). Ativações de cadastros
+    // antigos (a "limpa" da base) ficam separadas em `backlog` — antes elas
+    // entravam na média e um lead de 90 dias jogava a média pra 28 dias.
+    // Dias contados por data de calendário (YYYY-MM-DD), sem fuso.
+    const diasEntre = (ini: string, fim: string): number | null => {
+      const a = Date.parse(String(ini).slice(0, 10)), b = Date.parse(String(fim).slice(0, 10));
+      if (isNaN(a) || isNaN(b)) return null;
+      const d = Math.round((b - a) / msDia);
+      return d >= 0 && d <= 365 ? d : null;
+    };
+    const ehCoorte = (l: any) => !!l.data_cadastro && String(l.data_cadastro).slice(0, 10) >= dataInicioStr && String(l.data_cadastro).slice(0, 10) <= dataFimStr;
     const deltasCadAtiv: number[] = [];
+    const deltasBacklog: number[] = [];
     for (const l of leadsPorAtivacao) {
       if (!l.data_cadastro) continue;
-      const tCad = new Date(l.data_cadastro).getTime();
-      const tAtv = new Date(l.data_ativacao).getTime();
-      if (isNaN(tCad) || isNaN(tAtv)) continue;
-      const dias = Math.round((tAtv - tCad) / msDia);
-      if (dias >= 0 && dias <= 365) deltasCadAtiv.push(dias);
+      const dias = diasEntre(l.data_cadastro, l.data_ativacao);
+      if (dias === null) continue;
+      if (ehCoorte(l)) deltasCadAtiv.push(dias); else deltasBacklog.push(dias);
     }
     const estatDias = (arr: number[]) => {
       if (arr.length === 0) return { media: null as number | null, mediana: null as number | null, p75: null as number | null, amostra: 0 };
@@ -120,6 +151,7 @@ export async function GET(req: NextRequest) {
       return { media: Math.round(media * 10) / 10, mediana, p75, amostra: arr.length };
     };
     const velocidadeCadAtiv = estatDias(deltasCadAtiv);
+    const velocidadeBacklog = estatDias(deltasBacklog);
 
     // Set de códigos ativos no período (para cruzar com TP e BI)
     const codsAtivosSet = new Set(leadsPorAtivacao.map((l: any) => String(l.cod)));
@@ -156,23 +188,16 @@ export async function GET(req: NextRequest) {
     // Estrutura enriquecida: pra cada operador guardamos:
     //   - leads (lista de cods pra cruzar com operação)
     //   - deltasDias (cadastro → ativação, pra calcular tempo médio)
-    const ativacoesPorOperadorDados: Record<string, { leads: string[]; deltasDias: number[] }> = {};
+    const ativacoesPorOperadorDados: Record<string, { leads: string[]; deltasDias: number[]; backlog: number }> = {};
     leadsPorAtivacao.filter((l: any) => l.quem_ativou).forEach((l: any) => {
-      const op = l.quem_ativou;
+      const op = String(l.quem_ativou).trim().toUpperCase();
       if (!ativacoesPorOperadorDados[op]) {
-        ativacoesPorOperadorDados[op] = { leads: [], deltasDias: [] };
+        ativacoesPorOperadorDados[op] = { leads: [], deltasDias: [], backlog: 0 };
       }
       ativacoesPorOperadorDados[op].leads.push(String(l.cod));
-      if (l.data_cadastro && l.data_ativacao) {
-        const tCad = new Date(l.data_cadastro).getTime();
-        const tAtv = new Date(l.data_ativacao).getTime();
-        if (!isNaN(tCad) && !isNaN(tAtv)) {
-          const dias = Math.round((tAtv - tCad) / msDia);
-          if (dias >= 0 && dias <= 365) {
-            ativacoesPorOperadorDados[op].deltasDias.push(dias);
-          }
-        }
-      }
+      if (!ehCoorte(l)) { ativacoesPorOperadorDados[op].backlog++; return; }
+      const dias = l.data_cadastro && l.data_ativacao ? diasEntre(l.data_cadastro, l.data_ativacao) : null;
+      if (dias !== null) ativacoesPorOperadorDados[op].deltasDias.push(dias);
     });
     // Versão simples (compat com o que já existe no frontend)
     const ativacoesPorOperador: Record<string, number> = {};
@@ -615,6 +640,8 @@ export async function GET(req: NextRequest) {
       if (!cad || !cad.data_ativacao) continue;
       // só contar se a ativação foi no período selecionado
       if (!dentroDoPeriodo(cad.data_ativacao)) continue;
+      // ANALYTICS_VELOCIDADE_COORTE_V1: e o lead TP chegou no período (coorte)
+      if (!dentroDoPeriodo(linha.dataISO)) continue;
       const tLead = new Date(linha.dataISO).getTime();
       const tAtv = new Date(cad.data_ativacao).getTime();
       if (isNaN(tLead) || isNaN(tAtv)) continue;
@@ -647,132 +674,27 @@ export async function GET(req: NextRequest) {
     Object.keys(cadastrosPorDia).forEach(k => { leadsCrmPorDia[k] = 0; });
     leadsCrmNoPeriodo.forEach(l => { if (l.created_at) { const dia = l.created_at.split('T')[0]; if (leadsCrmPorDia[dia] !== undefined) leadsCrmPorDia[dia]++; } });
 
-    // ═══ 3. BI ═══ (agora passa data_inicio/data_fim pra respeitar filtro do período)
-    let emOperacao = 0;
-    let emOperacaoAnt = 0;
-    let emOperacao90d = 0; // funil de conversão — versão 90 dias
-    let tpEmOperacao = 0;
-    let tpEmOperacao90d = 0; // versão "últimos 3 meses" (janela fixa 90d)
-    let retencaoRodaramNoAtual = 0; // ativados no período ANT que rodaram no ATUAL
-    let codsEmOperacaoSet = new Set<string>();
-    try {
-      const codigosAtivos = leadsPorAtivacao.map((l: any) => String(l.cod)).filter(Boolean);
-      const codigosAtivosAnt = leadsPorAtivacaoAnt.map((l: any) => String(l.cod)).filter(Boolean);
-      const codigosAtivos90d = leadsPorAtivacao90d.map((l: any) => String(l.cod)).filter(Boolean);
-      // Códigos dos TP Ativados em AMBAS as versões (pra medir operação)
-      const codsTPAtivosAtuais = funilAtual.ativadosItens.map(i => i.cod_profissional).filter(Boolean);
-      const codsTPAtivos90d    = funil90d.ativadosItens.map(i => i.cod_profissional).filter(Boolean);
-
-      // UNIÃO: consulta operação para conversão + TP atual. Crucial pra quando
-      // um TP Ativado tem status='ativo' mas data_ativacao=null → ele não está
-      // em leadsPorAtivacao (que exige data_ativacao no período), mas PODE estar
-      // rodando em bi_entregas. Sem essa união, ele nunca entra em tpEmOperacao.
-      const codigosParaVerificarAtual = Array.from(new Set([...codigosAtivos, ...codsTPAtivosAtuais]));
-
-      if (codigosParaVerificarAtual.length > 0) {
-        const biResult = await fetch(`${BI_API_URL}/api/crm/verificar-operacao`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', ...(CRM_SERVICE_KEY ? { 'x-service-key': CRM_SERVICE_KEY } : {}) },
-          // Intervalo fixo: conta entregas dentro do período selecionado no filtro
-          body: JSON.stringify({ codigos: codigosParaVerificarAtual, data_inicio: dataInicioStr, data_fim: dataFimStr }),
-        }).then(r => r.json()).catch(() => null);
-
-        if (biResult?.resultado) {
-          codsEmOperacaoSet = new Set(biResult.resultado.filter((r: any) => r.em_operacao).map((r: any) => String(r.cod_profissional)));
-
-          // "emOperacao" do funil de conversão só conta códigos que estão em leadsPorAtivacao
-          // (manter compat: o KPI principal só considera ativados tradicionais).
-          const setAtivadosConv = new Set(codigosAtivos);
-          emOperacao = Array.from(codsEmOperacaoSet).filter(c => setAtivadosConv.has(c)).length;
-
-          // "tpEmOperacao" conta códigos que são TP Ativados (inclusive sem data_ativacao)
-          const codsTPAtivados = new Set<string>(leadsTPAtivados.map((l: any) => String(l.cod_profissional)));
-          tpEmOperacao = Array.from(codsTPAtivados).filter(c => codsEmOperacaoSet.has(c)).length;
-        }
-      }
-
-      // TP em Operação — VERSÃO 90 DIAS (janela fixa independente do filtro)
-      if (codsTPAtivos90d.length > 0) {
-        const bi90 = await fetch(`${BI_API_URL}/api/crm/verificar-operacao`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', ...(CRM_SERVICE_KEY ? { 'x-service-key': CRM_SERVICE_KEY } : {}) },
-          body: JSON.stringify({ codigos: codsTPAtivos90d, data_inicio: dataInicio90, data_fim: dataFim90 }),
-        }).then(r => r.json()).catch(() => null);
-        if (bi90?.resultado) {
-          const setOp90 = new Set(bi90.resultado.filter((r: any) => r.em_operacao).map((r: any) => String(r.cod_profissional)));
-          const setTP90 = new Set<string>(codsTPAtivos90d);
-          tpEmOperacao90d = Array.from(setTP90).filter((c: string) => setOp90.has(c)).length;
-        }
-      }
-
-      // Em Operação — PERÍODO ANTERIOR (pra delta vs KPI principal)
-      if (codigosAtivosAnt.length > 0) {
-        const biAnt = await fetch(`${BI_API_URL}/api/crm/verificar-operacao`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', ...(CRM_SERVICE_KEY ? { 'x-service-key': CRM_SERVICE_KEY } : {}) },
-          body: JSON.stringify({ codigos: codigosAtivosAnt, data_inicio: dataAntInicioStr, data_fim: dataAntFimStr }),
-        }).then(r => r.json()).catch(() => null);
-        if (biAnt?.resultado) {
-          const setOpAnt = new Set<string>(biAnt.resultado.filter((r: any) => r.em_operacao).map((r: any) => String(r.cod_profissional)));
-          const setAtivAnt = new Set<string>(codigosAtivosAnt);
-          emOperacaoAnt = Array.from(setOpAnt).filter((c: string) => setAtivAnt.has(c)).length;
-        }
-      }
-
-      // Em Operação — FUNIL CONVERSÃO VERSÃO 90 DIAS (pra toggle do funil)
-      if (codigosAtivos90d.length > 0) {
-        const biConv90 = await fetch(`${BI_API_URL}/api/crm/verificar-operacao`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', ...(CRM_SERVICE_KEY ? { 'x-service-key': CRM_SERVICE_KEY } : {}) },
-          body: JSON.stringify({ codigos: codigosAtivos90d, data_inicio: dataInicio90, data_fim: dataFim90 }),
-        }).then(r => r.json()).catch(() => null);
-        if (biConv90?.resultado) {
-          const setOpConv90 = new Set<string>(biConv90.resultado.filter((r: any) => r.em_operacao).map((r: any) => String(r.cod_profissional)));
-          const setAtivConv90 = new Set<string>(codigosAtivos90d);
-          emOperacao90d = Array.from(setOpConv90).filter((c: string) => setAtivConv90.has(c)).length;
-        }
-      }
-
-      // ═══ RETENÇÃO — leads ativados no período anterior que rodaram no atual ═══
-      // Pergunta: dos X leads ativados no mês anterior, quantos fizeram entrega
-      // no período atual? Isso mede retenção/churn pós-ativação.
-      // codigosAtivosAnt já foi calculado acima (leadsPorAtivacaoAnt).
-      if (codigosAtivosAnt.length > 0) {
-        const biRet = await fetch(`${BI_API_URL}/api/crm/verificar-operacao`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', ...(CRM_SERVICE_KEY ? { 'x-service-key': CRM_SERVICE_KEY } : {}) },
-          // Chave: ativados do PERÍODO ANTERIOR, mas verifica entregas do PERÍODO ATUAL
-          body: JSON.stringify({ codigos: codigosAtivosAnt, data_inicio: dataInicioStr, data_fim: dataFimStr }),
-        }).then(r => r.json()).catch(() => null);
-        if (biRet?.resultado) {
-          const setRet = new Set<string>(biRet.resultado.filter((r: any) => r.em_operacao).map((r: any) => String(r.cod_profissional)));
-          retencaoRodaramNoAtual = setRet.size;
-        }
-      }
-    } catch (err: any) { console.error('[Analytics] Erro BI:', err.message); }
-
-    // ═══ QUALIDADE POR OPERADOR ═══
-    // Pra cada operador que ativou leads no período, calcula:
-    //  - ativados (volume)
-    //  - emOperacao (quantos dos leads dele estão rodando no período)
-    //  - taxaOp (% ativados que viraram operação)
-    //  - tempoMedioDias (média de dias entre cadastro e ativação)
-    // Fonte de "em operação": codsEmOperacaoSet populado no bloco BI acima.
-    // ALOCADOS_POR_OPERADOR_V1: o calculo de qualidadePorOperador foi movido
-    // para DEPOIS do bloco de alocacoes (precisa do codsAlocadosSet).
-
-    // ═══ 4. ALOCAÇÕES (mesmo período) ═══
-    // FIX: antes tinha `importado=false`, o que excluía todas as alocações
-    // importadas da Google Sheet — o KPI só contava alocações criadas pela UI.
-    // Agora conta TODAS (manuais + importadas) para bater com a realidade.
+    // ═══ 3. ALOCAÇÕES (antes do BI: os alocados também entram em "Em Operação") ═══
+    // ANALYTICS_ALOCADOS_OPERACAO_V1
+    // Período por DATA PREVISTA (fallback created_at) — mesma regra da tela de
+    // Alocação. Conta TODAS (manuais + importadas).
     let totalAlocados = 0;
     let totalAlocadosAnt = 0;
     let totalAlocados90d = 0;
     let alocacoesPorOperador: Record<string, number> = {};
+    // operador (UPPER) → cods distintos que ele alocou no período
+    const codsAlocadosPorOperador: Record<string, Set<string>> = {};
+    let codsAlocadosPeriodo: string[] = [];
+    let codsAlocadosAnt: string[] = [];
+    let codsAlocados90d: string[] = [];
 
     const alocacoesPorDia: Record<string, number> = {};
-    // Pré-zerar todas as chaves de dia do período (mesma janela de cadastros/ativados)
     Object.keys(cadastrosPorDia).forEach(k => { alocacoesPorDia[k] = 0; });
+    const codDaAlocacao = (a: any): string => String(a.cod_prof ?? a.cod_profissional ?? '').replace(/\D/g, '');
+    const diaDaAlocacao = (a: any): string | null => {
+      const fonte = a.data_prevista || a.created_at;
+      return fonte ? String(fonte).split('T')[0] : null;
+    };
     try {
       const alocResp = await fetch(`${BI_API_URL}/api/crm/alocacao?limit=50000&todos=true`, {
         headers: { 'Content-Type': 'application/json', ...(CRM_SERVICE_KEY ? { 'x-service-key': CRM_SERVICE_KEY } : {}) },
@@ -780,86 +702,159 @@ export async function GET(req: NextRequest) {
 
       const todasAlocacoes: any[] = alocResp?.data || [];
 
-      // Filtrar alocações pelo período — usa DATA PREVISTA (quando foi planejada
-      // a operação) com fallback pra created_at caso a alocação antiga não tenha
-      // data_prevista preenchida.
       const alocacoesPeriodo = todasAlocacoes.filter((a: any) => {
-        const fonte = a.data_prevista || a.created_at;
-        if (!fonte) return false;
-        const d = String(fonte).split('T')[0];
-        if (d < dataInicioStr || d > dataFimStr) return false;
-        return true;
+        const d = diaDaAlocacao(a);
+        return !!d && d >= dataInicioStr && d <= dataFimStr;
       });
-
-      // Período ANTERIOR — mesma regra de data_prevista + fallback
-      const alocacoesAnt = todasAlocacoes.filter((a: any) => {
-        const fonte = a.data_prevista || a.created_at;
-        return dentroDoPeriodoAnt(fonte);
-      });
-      totalAlocadosAnt = alocacoesAnt.length;
-
-      // Últimos 90 dias — pro funil "Últimos 3 meses"
-      const alocacoes90d = todasAlocacoes.filter((a: any) => {
-        const fonte = a.data_prevista || a.created_at;
-        return dentroDe90d(fonte);
-      });
-      totalAlocados90d = alocacoes90d.length;
+      const alocacoesAnt = todasAlocacoes.filter((a: any) => dentroDoPeriodoAnt(diaDaAlocacao(a)));
+      const alocacoes90d = todasAlocacoes.filter((a: any) => dentroDe90d(diaDaAlocacao(a)));
 
       totalAlocados = alocacoesPeriodo.length;
+      totalAlocadosAnt = alocacoesAnt.length;
+      totalAlocados90d = alocacoes90d.length;
+      codsAlocadosPeriodo = Array.from(new Set(alocacoesPeriodo.map(codDaAlocacao).filter(Boolean)));
+      codsAlocadosAnt = Array.from(new Set(alocacoesAnt.map(codDaAlocacao).filter(Boolean)));
+      codsAlocados90d = Array.from(new Set(alocacoes90d.map(codDaAlocacao).filter(Boolean)));
 
-      // Agrupar por quem_alocou E por dia (pro gráfico)
       alocacoesPeriodo.forEach((a: any) => {
         const op = a.quem_alocou || 'N/I';
         alocacoesPorOperador[op] = (alocacoesPorOperador[op] || 0) + 1;
-        const fonte = a.data_prevista || a.created_at;
-        if (fonte) {
-          const dia = String(fonte).split('T')[0];
-          if (alocacoesPorDia[dia] !== undefined) alocacoesPorDia[dia]++;
-        }
+        const opNorm = String(op).trim().toUpperCase();
+        const cod = codDaAlocacao(a);
+        if (cod) (codsAlocadosPorOperador[opNorm] = codsAlocadosPorOperador[opNorm] || new Set<string>()).add(cod);
+        const dia = diaDaAlocacao(a);
+        if (dia && alocacoesPorDia[dia] !== undefined) alocacoesPorDia[dia]++;
       });
 
-      console.log(`[Analytics] Alocações período (por data_prevista): ${totalAlocados} de ${todasAlocacoes.length} total`);
+      console.log(`[Analytics] Alocações período (por data_prevista): ${totalAlocados} (${codsAlocadosPeriodo.length} profissionais) de ${todasAlocacoes.length} total`);
     } catch (err: any) { console.error('[Analytics] Erro alocações:', err.message); }
 
-    // ALOCADOS_POR_OPERADOR_V1: mapa de alocacoes por operador com chave
-    // normalizada (upper + trim), pra casar com o nome vindo das ativacoes.
+    // ═══ 4. BI ═══ (entregas em bi_entregas dentro do período)
+    // "Em Operação" (KPI) = profissionais ATIVADOS ou ALOCADOS no período que
+    // fizeram entrega no período. Antes só contava ativados no período — quem
+    // foi ativado em setembro e alocado em outubro rodando não entrava.
+    // Duas taxas:
+    //   taxaOperacao      = ativados que rodaram ÷ ativados  (qualidade da ativação)
+    //   taxaAlocOperacao  = alocados que rodaram ÷ alocados  (efetividade da alocação)
+    const verificarOperacao = async (codigos: string[], ini: string, fim: string): Promise<Set<string> | null> => {
+      if (codigos.length === 0) return new Set<string>();
+      const r = await fetch(`${BI_API_URL}/api/crm/verificar-operacao`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...(CRM_SERVICE_KEY ? { 'x-service-key': CRM_SERVICE_KEY } : {}) },
+        body: JSON.stringify({ codigos, data_inicio: ini, data_fim: fim }),
+      }).then(x => x.json()).catch(() => null);
+      if (!r?.resultado) return null;
+      return new Set<string>(r.resultado.filter((x: any) => x.em_operacao).map((x: any) => String(x.cod_profissional)));
+    };
+    const contarEm = (cods: Iterable<string>, set: Set<string>) => { let n = 0; for (const c of Array.from(new Set(cods))) if (set.has(c)) n++; return n; };
+
+    let emOperacao = 0;            // KPI: ativados ∪ alocados que rodaram
+    let emOperacaoAtivados = 0;    // só ativados que rodaram (taxa de ativação)
+    let alocadosEmOperacao = 0;    // só alocados que rodaram (taxa de alocação)
+    let emOperacaoAnt = 0;
+    let emOperacao90d = 0;
+    let tpEmOperacao = 0;
+    let tpEmOperacao90d = 0;
+    let retencaoRodaramNoAtual = 0;
+    let codsEmOperacaoSet = new Set<string>();
+    try {
+      const codigosAtivos = leadsPorAtivacao.map((l: any) => String(l.cod)).filter(Boolean);
+      const codigosAtivosAnt = leadsPorAtivacaoAnt.map((l: any) => String(l.cod)).filter(Boolean);
+      const codigosAtivos90d = leadsPorAtivacao90d.map((l: any) => String(l.cod)).filter(Boolean);
+      const codsTPAtivosAtuais = funilAtual.ativadosItens.map(i => i.cod_profissional).filter(Boolean);
+      const codsTPAtivos90d    = funil90d.ativadosItens.map(i => i.cod_profissional).filter(Boolean);
+
+      // Período atual: ativados + TP ativados + alocados numa chamada só
+      const setAtual = await verificarOperacao(
+        Array.from(new Set([...codigosAtivos, ...codsTPAtivosAtuais, ...codsAlocadosPeriodo])),
+        dataInicioStr, dataFimStr
+      );
+      if (setAtual) {
+        codsEmOperacaoSet = setAtual;
+        emOperacaoAtivados = contarEm(codigosAtivos, setAtual);
+        alocadosEmOperacao = contarEm(codsAlocadosPeriodo, setAtual);
+        emOperacao = contarEm([...codigosAtivos, ...codsAlocadosPeriodo], setAtual);
+        tpEmOperacao = contarEm(codsTPAtivosAtuais, setAtual);
+      }
+
+      // Período anterior (mesma regra: ativados ∪ alocados do período anterior)
+      const setAnt = await verificarOperacao(
+        Array.from(new Set([...codigosAtivosAnt, ...codsAlocadosAnt])), dataAntInicioStr, dataAntFimStr
+      );
+      if (setAnt) emOperacaoAnt = contarEm([...codigosAtivosAnt, ...codsAlocadosAnt], setAnt);
+
+      // Funil TP 90d
+      const setTP90 = await verificarOperacao(codsTPAtivos90d, dataInicio90, dataFim90);
+      if (setTP90) tpEmOperacao90d = contarEm(codsTPAtivos90d, setTP90);
+
+      // Funil conversão 90d (mesma regra do KPI)
+      const setConv90 = await verificarOperacao(
+        Array.from(new Set([...codigosAtivos90d, ...codsAlocados90d])), dataInicio90, dataFim90
+      );
+      if (setConv90) emOperacao90d = contarEm([...codigosAtivos90d, ...codsAlocados90d], setConv90);
+
+      // Retenção: ativados no período ANTERIOR que rodaram no período ATUAL
+      const setRet = await verificarOperacao(codigosAtivosAnt, dataInicioStr, dataFimStr);
+      if (setRet) retencaoRodaramNoAtual = setRet.size;
+    } catch (err: any) { console.error('[Analytics] Erro BI:', err.message); }
+
+    // ═══ QUALIDADE POR OPERADOR ═══
+    // Une quem ATIVOU e quem ALOCOU no período (nome normalizado UPPER/trim).
+    //  - ativados / emOperacao / taxaOp       → dos leads que ELE ativou
+    //  - alocados / alocadosEmOperacao / taxaAloc → dos profissionais que ELE alocou
+    //  - tempoTipicoDias: mediana cadastro→ativação da coorte (cadastrados no período)
+    //  - backlog: ativações de cadastros de antes do período (limpa da base)
     const alocacoesPorOperadorNorm: Record<string, number> = {};
     Object.entries(alocacoesPorOperador).forEach(([op, n]) => {
       const k = String(op).trim().toUpperCase();
       alocacoesPorOperadorNorm[k] = (alocacoesPorOperadorNorm[k] || 0) + (n as number);
     });
+    const mediana = (arr: number[]) => {
+      if (arr.length === 0) return null;
+      const s = [...arr].sort((a, b) => a - b);
+      return s[Math.floor(s.length / 2)];
+    };
 
     const qualidadePorOperador: Array<{
       operador: string;
       ativados: number;
-      alocados: number;
       emOperacao: number;
       taxaOp: number;
+      alocados: number;
+      alocadosProfissionais: number;
+      alocadosEmOperacao: number;
+      taxaAloc: number;
+      tempoTipicoDias: number | null;
       tempoMedioDias: number | null;
+      backlog: number;
     }> = [];
-    Object.entries(ativacoesPorOperadorDados).forEach(([op, d]) => {
+    const operadores = new Set<string>([
+      ...Object.keys(ativacoesPorOperadorDados),
+      ...Object.keys(codsAlocadosPorOperador).filter(o => o !== 'N/I'),
+    ]);
+    operadores.forEach((op) => {
+      const d = ativacoesPorOperadorDados[op] || { leads: [], deltasDias: [], backlog: 0 };
       const ativados = d.leads.length;
       const emOp = d.leads.filter(c => codsEmOperacaoSet.has(c)).length;
-      // ALOCADOS_POR_OPERADOR_V1: quantas alocacoes ESTE operador fez no periodo
-      // (campo quem_alocou da tela de Alocacao). E produtividade dele na esteira,
-      // nao etapa do funil dos leads que ele ativou — por isso pode ser maior
-      // que "ativados" (ele aloca profissional que outro operador ativou).
-      // Chave normalizada: quem_alocou vem em caixa alta da UI, quem_ativou nem sempre.
-      const alocados = alocacoesPorOperadorNorm[String(op).trim().toUpperCase()] || 0;
-      const taxaOp = ativados > 0 ? Math.round((emOp / ativados) * 100) : 0;
-      const tempoMedio = d.deltasDias.length > 0
-        ? Math.round((d.deltasDias.reduce((s, n) => s + n, 0) / d.deltasDias.length) * 10) / 10
-        : null;
+      const codsAloc = Array.from(codsAlocadosPorOperador[op] || []);
+      const alocEmOp = codsAloc.filter(c => codsEmOperacaoSet.has(c)).length;
       qualidadePorOperador.push({
         operador: op,
         ativados,
-        alocados,
         emOperacao: emOp,
-        taxaOp,
-        tempoMedioDias: tempoMedio,
+        taxaOp: ativados > 0 ? Math.round((emOp / ativados) * 100) : 0,
+        alocados: alocacoesPorOperadorNorm[op] || 0,
+        alocadosProfissionais: codsAloc.length,
+        alocadosEmOperacao: alocEmOp,
+        taxaAloc: codsAloc.length > 0 ? Math.round((alocEmOp / codsAloc.length) * 100) : 0,
+        tempoTipicoDias: mediana(d.deltasDias),
+        tempoMedioDias: d.deltasDias.length > 0
+          ? Math.round((d.deltasDias.reduce((s, n) => s + n, 0) / d.deltasDias.length) * 10) / 10
+          : null,
+        backlog: d.backlog,
       });
     });
-    qualidadePorOperador.sort((a, b) => b.ativados - a.ativados);
+    qualidadePorOperador.sort((a, b) => (b.ativados + b.alocados) - (a.ativados + a.alocados));
 
     // ═══ RESPOSTA ═══
     // naoAtivados = exatamente os mesmos leads do card "Não Ativados por Região".
@@ -869,12 +864,24 @@ export async function GET(req: NextRequest) {
     const naoAtivados = leadsNaoAtivados.length;
     const taxaConversao = totalCadastros > 0 ? Math.round(((totalCadastros - naoAtivados) / totalCadastros) * 100) : 0;
     // Em Operação % baseado nos ATIVADOS (não no total)
-    const taxaOperacao = totalAtivos > 0 ? Math.round((emOperacao / totalAtivos) * 100) : 0;
+    const taxaOperacao = totalAtivos > 0 ? Math.round((emOperacaoAtivados / totalAtivos) * 100) : 0;
+    const alocadosProfissionais = codsAlocadosPeriodo.length;
+    const taxaAlocOperacao = alocadosProfissionais > 0 ? Math.round((alocadosEmOperacao / alocadosProfissionais) * 100) : 0;
 
     return NextResponse.json({
       success: true,
       data: {
-        kpis: { totalCadastros, totalAtivos, totalAlocados, totalInativos, naoAtivados, emOperacao, naoOperando: totalAtivos - emOperacao, taxaConversao, taxaOperacao },
+        kpis: {
+          totalCadastros, totalAtivos, totalAlocados, totalInativos, naoAtivados,
+          emOperacao,                 // ativados ∪ alocados no período que rodaram
+          emOperacaoAtivados,         // só ativados que rodaram
+          naoOperando: totalAtivos - emOperacaoAtivados,
+          taxaConversao,
+          taxaOperacao,               // ativados que rodaram ÷ ativados
+          alocadosProfissionais,      // profissionais distintos alocados
+          alocadosEmOperacao,         // desses, quantos rodaram
+          taxaAlocOperacao,           // alocados que rodaram ÷ alocados
+        },
 
         // Período anterior (mesma duração, deslocado pra trás) — pra calcular
         // variação de cada KPI. O frontend calcula %Δ localmente.
@@ -882,6 +889,8 @@ export async function GET(req: NextRequest) {
           dataInicio: dataAntInicioStr,
           dataFim: dataAntFimStr,
           duracaoDias,
+          criterio: 'mesmos_dias_mes_anterior',
+          atualFimEfetivo: atualFimEfetivoStr, // até onde o período atual tem dados (hoje, se inclui o futuro)
           totalCadastros: totalCadastrosAnt,
           totalAtivos: totalAtivosAnt,
           totalAlocados: totalAlocadosAnt,
@@ -894,6 +903,9 @@ export async function GET(req: NextRequest) {
         velocidade: {
           cadastroAtivacao: velocidadeCadAtiv, // { media, mediana, p75, amostra }
           tpLeadAtivacao:   velocidadeTpAtiv,
+          // Ativações no período de quem se cadastrou ANTES dele (limpa da base)
+          backlog:          velocidadeBacklog,
+          coorte: { dataInicio: dataInicioStr, dataFim: dataFimStr },
         },
         // ═══ Qualidade por Operador ═══
         // Cada operador com: ativados, emOperacao, taxaOp (% operando), tempoMedioDias
@@ -949,7 +961,10 @@ export async function GET(req: NextRequest) {
           dataFim: dataFim90,
           janela: 'últimos 90 dias corridos',
         },
-        conversaoOperacao: { leadsAtivados: totalAtivos, emOperacao, naoOperando: totalAtivos - emOperacao, taxaReal: taxaOperacao },
+        conversaoOperacao: {
+          leadsAtivados: totalAtivos, emOperacao: emOperacaoAtivados, naoOperando: totalAtivos - emOperacaoAtivados, taxaReal: taxaOperacao,
+          alocados: alocadosProfissionais, alocadosEmOperacao, alocadosSemEntrega: alocadosProfissionais - alocadosEmOperacao, taxaAlocacao: taxaAlocOperacao,
+        },
         porRegiao: Object.entries(ativadosPorRegiao).map(([r, q]) => ({ regiao: r, quantidade: q })).sort((a, b) => b.quantidade - a.quantidade),
         cadastrosPorRegiao: Object.entries(cadastrosPorRegiao).map(([r, q]) => ({ regiao: r, quantidade: q })).sort((a, b) => b.quantidade - a.quantidade),
         naoAtivadosPorRegiao: Object.entries(naoAtivadosPorRegiao).map(([r, q]) => ({ regiao: r, quantidade: q })).sort((a, b) => b.quantidade - a.quantidade),

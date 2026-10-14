@@ -24,11 +24,18 @@ function InfoTooltip({ text }: { text: string }) {
 }
 
 interface AnalyticsData {
-  kpis: { totalCadastros: number; totalAtivos: number; totalAlocados: number; totalInativos: number; naoAtivados: number; emOperacao: number; naoOperando: number; taxaConversao: number; taxaOperacao: number };
+  kpis: {
+    totalCadastros: number; totalAtivos: number; totalAlocados: number; totalInativos: number; naoAtivados: number;
+    emOperacao: number; naoOperando: number; taxaConversao: number; taxaOperacao: number;
+    // ANALYTICS_ALOCADOS_OPERACAO_V1
+    emOperacaoAtivados?: number; alocadosProfissionais?: number; alocadosEmOperacao?: number; taxaAlocOperacao?: number;
+  };
   periodoAnterior?: {
     dataInicio: string;
     dataFim: string;
     duracaoDias: number;
+    criterio?: string;
+    atualFimEfetivo?: string;
     totalCadastros: number;
     totalAtivos: number;
     totalAlocados: number;
@@ -37,6 +44,8 @@ interface AnalyticsData {
   velocidade?: {
     cadastroAtivacao: { media: number | null; mediana: number | null; p75: number | null; amostra: number };
     tpLeadAtivacao:   { media: number | null; mediana: number | null; p75: number | null; amostra: number };
+    backlog?:         { media: number | null; mediana: number | null; p75: number | null; amostra: number };
+    coorte?:          { dataInicio: string; dataFim: string };
   };
   qualidadePorOperador?: Array<{
     operador: string;
@@ -45,6 +54,11 @@ interface AnalyticsData {
     emOperacao: number;
     taxaOp: number;
     tempoMedioDias: number | null;
+    alocadosProfissionais?: number;
+    alocadosEmOperacao?: number;
+    taxaAloc?: number;
+    tempoTipicoDias?: number | null;
+    backlog?: number;
   }>;
   retencao?: {
     baseAnt: number;
@@ -59,7 +73,10 @@ interface AnalyticsData {
   funilTP: Array<{ stage: string; quantidade: number; cor: string; base: number }>;
   funilTP90d?: Array<{ stage: string; quantidade: number; cor: string; base: number }>;
   funilTP90dMeta?: { dataInicio: string; dataFim: string; janela: string };
-  conversaoOperacao: { leadsAtivados: number; emOperacao: number; naoOperando: number; taxaReal: number };
+  conversaoOperacao: {
+    leadsAtivados: number; emOperacao: number; naoOperando: number; taxaReal: number;
+    alocados?: number; alocadosEmOperacao?: number; alocadosSemEntrega?: number; taxaAlocacao?: number;
+  };
   porRegiao: Array<{ regiao: string; quantidade: number }>;
   cadastrosPorRegiao?: Array<{ regiao: string; quantidade: number }>;
   naoAtivadosPorRegiao: Array<{ regiao: string; quantidade: number }>;
@@ -960,7 +977,7 @@ function DeltaBotao({
   anterior: number | undefined;
   labelKpi: string;
   corBase: string; // ex: 'text-purple-600'
-  filtros: { dataInicio: string; dataFim: string; periodoAntInicio: string; periodoAntFim: string };
+  filtros: { dataInicio: string; dataFim: string; periodoAntInicio: string; periodoAntFim: string; atualFimEfetivo?: string };
 }) {
   const [modalOpen, setModalOpen] = useState(false);
   const d = calcularDelta(atual, anterior);
@@ -1009,7 +1026,10 @@ function DeltaBotao({
               <div className="flex items-center justify-between p-4 bg-purple-50 border border-purple-100 rounded-xl">
                 <div>
                   <p className="text-xs text-purple-700 uppercase tracking-wide font-semibold">Período atual</p>
-                  <p className="text-xs text-gray-500 mt-0.5">{formatBR(filtros.dataInicio)} → {formatBR(filtros.dataFim)}</p>
+                  <p className="text-xs text-gray-500 mt-0.5">
+                    {formatBR(filtros.dataInicio)} → {formatBR(filtros.atualFimEfetivo || filtros.dataFim)}
+                    {filtros.atualFimEfetivo && filtros.atualFimEfetivo !== filtros.dataFim && <span className="text-gray-400"> (até hoje)</span>}
+                  </p>
                 </div>
                 <p className={`text-3xl font-bold ${corBase}`}>{atual.toLocaleString()}</p>
               </div>
@@ -1017,7 +1037,7 @@ function DeltaBotao({
               {/* Período anterior */}
               <div className="flex items-center justify-between p-4 bg-gray-50 border border-gray-200 rounded-xl">
                 <div>
-                  <p className="text-xs text-gray-600 uppercase tracking-wide font-semibold">Período anterior</p>
+                  <p className="text-xs text-gray-600 uppercase tracking-wide font-semibold">Mesmos dias do mês anterior</p>
                   <p className="text-xs text-gray-500 mt-0.5">{formatBR(filtros.periodoAntInicio)} → {formatBR(filtros.periodoAntFim)}</p>
                 </div>
                 <p className="text-3xl font-bold text-gray-700">{(anterior ?? 0).toLocaleString()}</p>
@@ -1115,7 +1135,7 @@ function CardVelocidade({
                 <p className="text-4xl font-bold text-gray-700">{v.p75}</p>
                 <p className="text-sm text-gray-500">dias</p>
               </div>
-              <p className="text-xs font-bold text-gray-700 uppercase tracking-wide">Caso mais lento</p>
+              <p className="text-xs font-bold text-gray-700 uppercase tracking-wide">3 em cada 4</p>
               <p className="text-[11px] text-gray-600 mt-1 leading-relaxed">
                 <strong>3 de cada 4 leads</strong> ativam em até {v.p75} {v.p75 === 1 ? 'dia' : 'dias'}. Se você quer garantir que <em>quase todo mundo</em> ativa rápido, olha esse número.
               </p>
@@ -1136,20 +1156,32 @@ function CardVelocidade({
           <strong className="text-gray-900">O que isso mostra:</strong> quanto tempo, em dias, um lead leva pra se tornar ativo.
           Medimos dois momentos diferentes — quando o lead chega no CRM (cadastro) e quando ele apareceu na planilha de tráfego pago.
           Quanto menor, mais rápido o time está convertendo.
+          {' '}<strong className="text-gray-900">Só entra quem chegou e ativou dentro do período filtrado</strong> — ativação de cadastro antigo (limpa da base) aparece separada abaixo.
         </p>
       </div>
+      {velocidade.backlog && velocidade.backlog.amostra > 0 && (
+        <div className="mb-5 px-3 py-2.5 bg-violet-50 border border-violet-200 rounded-lg flex flex-wrap items-center gap-x-4 gap-y-1">
+          <p className="text-xs text-violet-900">
+            <strong>{velocidade.backlog.amostra} {velocidade.backlog.amostra === 1 ? 'ativação' : 'ativações'} de cadastros antigos</strong> no período
+            (cadastrados antes de {velocidade.coorte ? velocidade.coorte.dataInicio.split('-').reverse().join('/') : 'o início do filtro'}).
+          </p>
+          <p className="text-xs text-violet-700">
+            Tempo típico desses: <strong>{velocidade.backlog.mediana} dias</strong> · média {velocidade.backlog.media?.toFixed(1)} dias — fora da conta acima.
+          </p>
+        </div>
+      )}
 
       <div className="space-y-6">
         {renderSecao(
           velocidade.cadastroAtivacao,
           '📋 Cadastro → Ativação',
-          'Conta a partir do dia que o motoboy aparece no CRM (via Playwright). Representa a velocidade geral do time de ativação, independente de onde o lead veio.',
+          'Do dia que o motoboy aparece no CRM (cadastro) até o dia em que foi marcado como ativado ("Quem ativou"). Só cadastros do período.',
           'amber',
         )}
         {renderSecao(
           velocidade.tpLeadAtivacao,
           '🎯 Lead TP → Ativação',
-          'Conta a partir do dia que o lead chegou pela campanha de tráfego pago. Mostra quanto tempo a campanha leva pra converter em ativo.',
+          'Do dia que o lead chegou pela campanha de tráfego pago até a ativação. Só leads TP que chegaram no período.',
           'blue',
         )}
       </div>
@@ -1158,14 +1190,19 @@ function CardVelocidade({
 }
 
 // ═══ Card Qualidade por Operador ═══
+// ANALYTICS_ALOCADOS_OPERACAO_V1: duas taxas por operador —
+//   Ativação: dos leads que ELE ativou no período, quantos rodaram
+//   Alocação: dos profissionais que ELE alocou no período, quantos rodaram
 function CardQualidadeOperador({
   itens,
 }: {
   itens: NonNullable<AnalyticsData['qualidadePorOperador']>;
 }) {
   if (!itens || itens.length === 0) return null;
-  // Referência: taxa média do grupo
-  const mediaTaxa = Math.round(itens.reduce((s, i) => s + i.taxaOp, 0) / itens.length);
+  const media = (vals: number[]) => (vals.length ? Math.round(vals.reduce((s, n) => s + n, 0) / vals.length) : 0);
+  const mediaTaxa = media(itens.filter(i => i.ativados > 0).map(i => i.taxaOp));
+  const mediaAloc = media(itens.filter(i => (i.alocadosProfissionais ?? 0) > 0).map(i => i.taxaAloc ?? 0));
+  const cor = (taxa: number, ref: number) => (taxa >= ref + 10 ? 'text-emerald-600' : taxa < ref - 10 ? 'text-red-600' : 'text-gray-700');
 
   return (
     <div className="card p-5">
@@ -1173,43 +1210,52 @@ function CardQualidadeOperador({
         <Star className="w-5 h-5 text-amber-500" /> Qualidade por Operador
       </h3>
       <p className="text-xs text-gray-600 mb-4 leading-relaxed">
-        Não basta ativar muito — o que importa é <strong>quantos dos ativados estão de fato rodando</strong>.
-        Quem tem taxa baixa pode estar ativando leads fracos. Taxa média do grupo: <strong>{mediaTaxa}%</strong>.
+        <strong>Ativação</strong>: dos leads que o operador ativou no período, quantos fizeram entrega.{' '}
+        <strong>Alocação</strong>: dos profissionais que ele alocou no período, quantos fizeram entrega.
+        Médias do grupo: ativação <strong>{mediaTaxa}%</strong> · alocação <strong>{mediaAloc}%</strong>.
       </p>
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
           <thead>
-            <tr className="text-xs text-gray-500 uppercase tracking-wide border-b">
-              <th className="text-left py-2 pr-2 font-medium">Operador</th>
+            <tr className="text-[11px] text-gray-500 uppercase tracking-wide">
+              <th className="text-left py-1 pr-2 font-medium" rowSpan={2}>Operador</th>
+              <th className="text-center py-1 px-2 font-semibold text-green-700 border-b border-green-200" colSpan={3}>Ativação</th>
+              <th className="text-center py-1 px-2 font-semibold text-violet-700 border-b border-violet-200" colSpan={3}>Alocação</th>
+              <th className="text-right py-1 pl-2 font-medium" rowSpan={2} title="Mediana de dias entre cadastro e ativação, só dos cadastros do período">Tempo típico</th>
+            </tr>
+            <tr className="text-[11px] text-gray-500 uppercase tracking-wide border-b">
               <th className="text-right py-2 px-2 font-medium">Ativados</th>
-              <th className="text-right py-2 px-2 font-medium" title="Alocacoes feitas por este operador no periodo (campo Quem Alocou)">Alocados</th>
-              <th className="text-right py-2 px-2 font-medium">Em Operação</th>
+              <th className="text-right py-2 px-2 font-medium">Rodaram</th>
               <th className="text-right py-2 px-2 font-medium">Taxa</th>
-              <th className="text-right py-2 pl-2 font-medium" title="Tempo médio em dias entre cadastro e ativação">Tempo médio</th>
+              <th className="text-right py-2 px-2 font-medium" title="Profissionais distintos alocados no período (Quem Alocou)">Alocados</th>
+              <th className="text-right py-2 px-2 font-medium">Rodaram</th>
+              <th className="text-right py-2 px-2 font-medium">Taxa</th>
             </tr>
           </thead>
           <tbody className="divide-y">
             {itens.map((item) => {
-              const acima = item.taxaOp > mediaTaxa;
-              const muitoAbaixo = item.taxaOp < mediaTaxa - 10;
-              const emoji = muitoAbaixo ? '⚠️' : acima && item.taxaOp >= mediaTaxa + 10 ? '⭐' : null;
-              const corTaxa =
-                muitoAbaixo ? 'text-red-600' :
-                acima ? 'text-emerald-600' :
-                'text-gray-700';
+              const aloc = item.alocadosProfissionais ?? item.alocados ?? 0;
+              const tipico = item.tempoTipicoDias ?? null;
               return (
                 <tr key={item.operador} className="hover:bg-gray-50">
-                  <td className="py-3 pr-2 font-medium text-gray-800 whitespace-nowrap">
-                    {item.operador} {emoji}
+                  <td className="py-3 pr-2 font-medium text-gray-800 whitespace-nowrap">{item.operador}</td>
+                  <td className="text-right py-3 px-2 tabular-nums">
+                    {item.ativados}
+                    {(item.backlog ?? 0) > 0 && (
+                      <span className="block text-[10px] text-violet-500" title="Ativações de cadastros de antes do período">{item.backlog} antigos</span>
+                    )}
                   </td>
-                  <td className="text-right py-3 px-2 tabular-nums">{item.ativados}</td>
-                  <td className="text-right py-3 px-2 tabular-nums text-gray-700">{item.alocados ?? '—'}</td>
                   <td className="text-right py-3 px-2 tabular-nums text-blue-600">{item.emOperacao}</td>
-                  <td className={`text-right py-3 px-2 font-bold tabular-nums ${corTaxa}`}>
-                    {item.taxaOp}%
+                  <td className={`text-right py-3 px-2 font-bold tabular-nums ${item.ativados ? cor(item.taxaOp, mediaTaxa) : 'text-gray-300'}`}>
+                    {item.ativados ? `${item.taxaOp}%` : '—'}
+                  </td>
+                  <td className="text-right py-3 px-2 tabular-nums">{aloc || '—'}</td>
+                  <td className="text-right py-3 px-2 tabular-nums text-blue-600">{aloc ? item.alocadosEmOperacao ?? 0 : '—'}</td>
+                  <td className={`text-right py-3 px-2 font-bold tabular-nums ${aloc ? cor(item.taxaAloc ?? 0, mediaAloc) : 'text-gray-300'}`}>
+                    {aloc ? `${item.taxaAloc ?? 0}%` : '—'}
                   </td>
                   <td className="text-right py-3 pl-2 tabular-nums text-gray-600">
-                    {item.tempoMedioDias !== null ? `${item.tempoMedioDias} d` : '—'}
+                    {tipico !== null ? `${tipico} d` : '—'}
                   </td>
                 </tr>
               );
@@ -1218,7 +1264,7 @@ function CardQualidadeOperador({
         </table>
       </div>
       <p className="text-[11px] text-gray-400 mt-3">
-        ⭐ acima de {mediaTaxa + 10}% &nbsp;&nbsp;⚠️ abaixo de {mediaTaxa - 10}% &nbsp;&nbsp; Taxa = operando ÷ ativados
+        Verde: 10 pts acima da média do grupo · Vermelho: 10 pts abaixo · "Rodaram" = fez entrega no período (BI)
       </p>
     </div>
   );
@@ -1376,7 +1422,7 @@ function AnalyticsContent() {
                     anterior={periodoAnterior.totalCadastros}
                     labelKpi="Total Cadastros"
                     corBase="text-purple-600"
-                    filtros={{ dataInicio, dataFim, periodoAntInicio: periodoAnterior.dataInicio, periodoAntFim: periodoAnterior.dataFim }}
+                    filtros={{ dataInicio, dataFim, periodoAntInicio: periodoAnterior.dataInicio, periodoAntFim: periodoAnterior.dataFim, atualFimEfetivo: periodoAnterior.atualFimEfetivo }}
                   />
                 )}
               </div>
@@ -1399,7 +1445,7 @@ function AnalyticsContent() {
                     anterior={periodoAnterior.totalAtivos}
                     labelKpi="Ativados"
                     corBase="text-green-600"
-                    filtros={{ dataInicio, dataFim, periodoAntInicio: periodoAnterior.dataInicio, periodoAntFim: periodoAnterior.dataFim }}
+                    filtros={{ dataInicio, dataFim, periodoAntInicio: periodoAnterior.dataInicio, periodoAntFim: periodoAnterior.dataFim, atualFimEfetivo: periodoAnterior.atualFimEfetivo }}
                   />
                 )}
               </div>
@@ -1422,7 +1468,7 @@ function AnalyticsContent() {
                     anterior={periodoAnterior.totalAlocados}
                     labelKpi="Alocados"
                     corBase="text-violet-600"
-                    filtros={{ dataInicio, dataFim, periodoAntInicio: periodoAnterior.dataInicio, periodoAntFim: periodoAnterior.dataFim }}
+                    filtros={{ dataInicio, dataFim, periodoAntInicio: periodoAnterior.dataInicio, periodoAntFim: periodoAnterior.dataFim, atualFimEfetivo: periodoAnterior.atualFimEfetivo }}
                   />
                 )}
               </div>
@@ -1444,12 +1490,18 @@ function AnalyticsContent() {
                     anterior={periodoAnterior.emOperacao}
                     labelKpi="Em Operação"
                     corBase="text-blue-600"
-                    filtros={{ dataInicio, dataFim, periodoAntInicio: periodoAnterior.dataInicio, periodoAntFim: periodoAnterior.dataFim }}
+                    filtros={{ dataInicio, dataFim, periodoAntInicio: periodoAnterior.dataInicio, periodoAntFim: periodoAnterior.dataFim, atualFimEfetivo: periodoAnterior.atualFimEfetivo }}
                   />
                 )}
               </div>
-              <p className="text-xs text-gray-500">Em Operação</p>
-              <p className="text-xs text-blue-500 mt-0.5">{kpis.taxaOperacao}% taxa real</p>
+              <p className="text-xs text-gray-500" title="Ativados ou alocados no período que fizeram entrega no período">Em Operação</p>
+              <p className="text-xs text-blue-500 mt-0.5" title="Alocados que rodaram ÷ profissionais alocados">
+                <strong>{kpis.taxaAlocOperacao ?? 0}%</strong> dos alocados
+                <span className="text-gray-400"> ({kpis.alocadosEmOperacao ?? 0}/{kpis.alocadosProfissionais ?? 0})</span>
+              </p>
+              <p className="text-xs text-gray-400" title="Ativados que rodaram ÷ ativados">
+                {kpis.taxaOperacao}% dos ativados ({kpis.emOperacaoAtivados ?? 0}/{kpis.totalAtivos})
+              </p>
             </div>
           </div>
         </div>
@@ -1459,12 +1511,15 @@ function AnalyticsContent() {
       {periodoAnterior && (
         <div className="text-xs text-gray-500 flex items-center gap-2 px-1">
           <Info className="w-3.5 h-3.5 text-gray-400" />
-          Variação comparada ao período anterior de mesma duração:{' '}
+          Variação comparada aos mesmos dias do mês anterior:{' '}
           <span className="font-medium text-gray-600">
             {periodoAnterior.dataInicio.split('-').reverse().join('/')}
             {' → '}
             {periodoAnterior.dataFim.split('-').reverse().join('/')}
           </span>
+          {periodoAnterior.atualFimEfetivo && periodoAnterior.atualFimEfetivo !== dataFim && (
+            <span className="text-gray-400">(período atual com dados até {periodoAnterior.atualFimEfetivo.split('-').reverse().join('/')})</span>
+          )}
         </div>
       )}
 
@@ -1486,6 +1541,18 @@ function AnalyticsContent() {
           <div className="bg-white rounded-xl p-4 border"><p className="text-2xl font-bold text-blue-600">{conversaoOperacao.taxaReal}%</p><p className="text-xs text-gray-500">Conversão efetiva</p></div>
         </div>
         <div className="mt-4 flex items-center gap-2"><span className="text-xs text-gray-500">Taxa</span><div className="flex-1 h-4 bg-red-200 rounded-full overflow-hidden"><div className="h-full bg-green-500 rounded-full" style={{ width: `${conversaoOperacao.taxaReal}%` }} /></div><span className="text-xs font-bold text-green-600">{conversaoOperacao.taxaReal}%</span></div>
+        {conversaoOperacao.alocados !== undefined && (
+          <>
+            <p className="text-xs font-semibold text-violet-700 uppercase tracking-wide mt-5 mb-2">Dos alocados no período</p>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+              <div className="bg-white rounded-xl p-4 border"><p className="text-2xl font-bold">{conversaoOperacao.alocados}</p><p className="text-xs text-gray-500">Profissionais alocados</p></div>
+              <div className="bg-white rounded-xl p-4 border"><p className="text-2xl font-bold text-green-600">{conversaoOperacao.alocadosEmOperacao}</p><p className="text-xs text-green-600">Fazendo entregas</p></div>
+              <div className="bg-white rounded-xl p-4 border"><p className="text-2xl font-bold text-red-500">{conversaoOperacao.alocadosSemEntrega}</p><p className="text-xs text-red-500">Sem entregas</p></div>
+              <div className="bg-white rounded-xl p-4 border"><p className="text-2xl font-bold text-violet-600">{conversaoOperacao.taxaAlocacao}%</p><p className="text-xs text-gray-500">Efetividade da alocação</p></div>
+            </div>
+            <div className="mt-4 flex items-center gap-2"><span className="text-xs text-gray-500">Taxa</span><div className="flex-1 h-4 bg-red-200 rounded-full overflow-hidden"><div className="h-full bg-violet-500 rounded-full" style={{ width: `${conversaoOperacao.taxaAlocacao ?? 0}%` }} /></div><span className="text-xs font-bold text-violet-600">{conversaoOperacao.taxaAlocacao}%</span></div>
+          </>
+        )}
       </div>
 
       {/* Funis */}
