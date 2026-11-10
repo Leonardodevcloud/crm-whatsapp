@@ -44,6 +44,8 @@ export default function Areas() {
   const [verTexto, setVerTexto] = useState(false);
   const [muni, setMuni] = useState<Record<string, Municipio[]>>({});
   const [carregandoMuni, setCarregandoMuni] = useState(false);
+  const [erroMuni, setErroMuni] = useState<string | null>(null);
+  const muniEmVoo = useRef<Set<string>>(new Set());
   const [busca, setBusca] = useState('');
   const [abrirBusca, setAbrirBusca] = useState(false);
   const detalheRef = useRef<HTMLDivElement | null>(null);
@@ -70,17 +72,34 @@ export default function Areas() {
     if (sujo && !window.confirm('Há mudanças não salvas neste estado. Descartar?')) return;
     const a = (areas || []).find((x) => x.uf === novo);
     if (!a) return;
-    setUf(novo); setDraft(copiar(a)); setMsg(null); setBusca(''); setAbrirBusca(false);
+    setUf(novo); setDraft(copiar(a)); setMsg(null); setBusca(''); setAbrirBusca(false); setErroMuni(null);
     setTimeout(() => { if (detalheRef.current && window.innerWidth < 1024) detalheRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' }); }, 50);
   };
 
-  const carregarMunicipios = useCallback(async (sigla: string) => {
-    if (muni[sigla]) return;
-    setCarregandoMuni(true);
-    const { data, error } = await fetchApi<{ municipios: Municipio[] }>(`/api/cerebro/municipios/${sigla}`, { cache: 'no-store' });
-    setCarregandoMuni(false);
-    if (error || !data) { setMsg({ tipo: 'erro', t: error || 'Não consegui buscar as cidades do IBGE' }); return; }
-    setMuni((m) => Object.assign({}, m, { [sigla]: data.municipios }));
+  // CEREBRO_TATI_V2: o servidor tem a lista do IBGE junto do código; se mesmo assim falhar,
+  // o navegador busca direto no IBGE e manda guardar no servidor.
+  const carregarMunicipios = useCallback(async (sigla: string, forcar = false) => {
+    if ((muni[sigla] && !forcar) || muniEmVoo.current.has(sigla)) return;
+    muniEmVoo.current.add(sigla);
+    setCarregandoMuni(true); setErroMuni(null);
+    try {
+      const { data, error } = await fetchApi<{ municipios: Municipio[] }>(`/api/cerebro/municipios/${sigla}`, { cache: 'no-store' });
+      if (!error && data && data.municipios?.length) { setMuni((m) => Object.assign({}, m, { [sigla]: data.municipios })); return; }
+      try {
+        const r = await fetch(`https://servicodados.ibge.gov.br/api/v1/localidades/estados/${sigla}/municipios`);
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        const bruto = (await r.json()) as { id: number; nome: string }[];
+        const lista = bruto.filter((x) => x && x.id && x.nome).map((x) => ({ ibge_id: x.id, nome: x.nome })).sort((a, b) => a.nome.localeCompare(b.nome, 'pt-BR'));
+        if (!lista.length) throw new Error('lista vazia');
+        setMuni((m) => Object.assign({}, m, { [sigla]: lista }));
+        fetchApi(`/api/cerebro/municipios/${sigla}`, { method: 'POST', body: JSON.stringify({ municipios: lista }) }).catch(() => undefined);
+      } catch {
+        setErroMuni(`Não consegui carregar a lista de cidades (${error || 'servidor sem resposta'}). Você ainda pode adicionar pelo nome.`);
+      }
+    } finally {
+      muniEmVoo.current.delete(sigla);
+      setCarregandoMuni(false);
+    }
   }, [fetchApi, muni]);
 
   const alterar = (fn: (a: Area) => void) => setDraft((d) => { if (!d) return d; const n = copiar(d); fn(n); return n; });
@@ -206,6 +225,9 @@ export default function Areas() {
                   <button key={m.ibge_id} type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => adicionar(m.nome, m.ibge_id)}
                     className="w-full text-left px-3 py-2 text-sm hover:bg-purple-50 flex items-center gap-2"><Plus className="w-4 h-4 text-purple-600" />{m.nome}</button>
                 ))}
+                {!carregandoMuni && !erroMuni && muni[draft.uf] && sugestoes.length === 0 && (
+                  <div className="px-3 py-2 text-sm text-gray-500">Nenhuma cidade com esse nome na lista do IBGE ({draft.uf}){draft.cidades.some((c) => normalizar(c.cidade).includes(normalizar(busca))) ? ' (ou ela já está na lista abaixo)' : ''}.</div>
+                )}
                 {!carregandoMuni && (
                   <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => adicionar(busca, null)}
                     className="w-full text-left px-3 py-2 text-sm hover:bg-gray-50 text-gray-600 border-t border-gray-100">
@@ -214,6 +236,13 @@ export default function Areas() {
                 )}
               </div>
             )}
+            {erroMuni && (
+              <div className="mt-1.5 text-xs text-red-700 flex flex-wrap items-center gap-2">
+                <span>{erroMuni}</span>
+                <button type="button" className="underline font-medium" onClick={() => carregarMunicipios(draft.uf, true)}>Tentar de novo</button>
+              </div>
+            )}
+            {!erroMuni && muni[draft.uf] && <div className="mt-1 text-[11px] text-gray-400">{muni[draft.uf].length} cidades ({draft.uf}) na lista do IBGE</div>}
           </div>
 
           {draft.cidades.length === 0 ? (

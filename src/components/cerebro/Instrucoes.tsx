@@ -2,6 +2,7 @@
 
 // ===========================================
 // Cérebro da Tati — Conhecimento atual (instruções por seção, com versão) (CEREBRO_TATI_V1)
+// CEREBRO_TATI_V2: a seção Cobertura mostra as cidades e veículos que vêm da aba Áreas
 // ===========================================
 
 import { useCallback, useEffect, useState } from 'react';
@@ -11,8 +12,14 @@ import { ChevronDown, ChevronUp, FileText, History as HistoryIcon, Loader2, Penc
 import { useApi } from '@/lib/hooks';
 import { Aviso, Pill, PromptInfo, Secao, fmtData } from './comum';
 
-function previa(t: string, n = 260) {
-  const limpo = t.replace(/\{\{COBERTURA\}\}/g, '[lista de cidades das Áreas de atendimento]').replace(/[#*]/g, '').replace(/\n{2,}/g, '\n').trim();
+function resumoCobertura(c: string | undefined) {
+  if (!c) return '[cidades e veículos da aba Áreas de atendimento]';
+  const linhas = c.split('\n').filter((l) => /^- [A-Z]{2}[ ,:—]/.test(l));
+  return linhas.length ? linhas.map((l) => l.replace(/^- /, '')).join(' · ') : '[cidades e veículos da aba Áreas de atendimento]';
+}
+
+function previa(t: string, cobertura?: string, n = 260) {
+  const limpo = t.replace(/\{\{COBERTURA\}\}/g, resumoCobertura(cobertura)).replace(/[#*]/g, '').replace(/\n{2,}/g, '\n').trim();
   return limpo.length > n ? limpo.slice(0, n).replace(/\s+\S*$/, '') + '…' : limpo;
 }
 
@@ -58,6 +65,12 @@ export default function Instrucoes({ irPara }: { irPara: (aba: 'areas' | 'ensina
 
   return (
     <div className="space-y-3">
+      {!!p.contradicoes?.length && (
+        <Aviso tipo="atencao">
+          Estas frases das instruções contradizem as Áreas de atendimento (a Tati pode ficar em dúvida). Vale editar a seção onde elas estão:
+          <ul className="list-disc ml-5 mt-1 space-y-0.5">{p.contradicoes.map((c) => <li key={c.linha}><i>“{c.texto}”</i></li>)}</ul>
+        </Aviso>
+      )}
       {!p.cobertura_dinamica && (
         <Aviso tipo="atencao">
           As instruções ativas têm uma lista de cidades escrita à mão. A Tati já recebe as <b>Áreas de atendimento</b> no fim (e elas mandam), mas o ideal é editar a seção <b>Cobertura</b> e trocar a lista pela linha <code className="bg-white px-1 rounded">{'{{COBERTURA}}'}</code>, para não ter duas listas.
@@ -85,6 +98,7 @@ export default function Instrucoes({ irPara }: { irPara: (aba: 'areas' | 'ensina
           const ed = editando === s.indice;
           const open = aberta === s.indice || ed;
           const auto = s.automatica === 'cobertura';
+          const soMarcador = auto && s.texto.trim() === '{{COBERTURA}}';
           return (
             <div key={s.indice} className="border-t border-gray-100 first:border-t-0 px-4 py-3">
               <div className="flex flex-wrap gap-3 items-start">
@@ -95,8 +109,10 @@ export default function Instrucoes({ irPara }: { irPara: (aba: 'areas' | 'ensina
                   {!ed && (
                     <button type="button" onClick={() => setAberta(open ? null : s.indice)} className="text-left w-full">
                       {open
-                        ? <pre className="whitespace-pre-wrap text-[13px] text-gray-800 font-sans leading-relaxed">{s.texto.replace(/\{\{COBERTURA\}\}/g, '{{COBERTURA}}  ← aqui entram as cidades das Áreas de atendimento')}</pre>
-                        : <p className="text-sm text-gray-700 leading-relaxed">{previa(s.texto)}</p>}
+                        ? (auto
+                          ? <TextoComCobertura texto={s.texto} cobertura={p.cobertura_texto} />
+                          : <pre className="whitespace-pre-wrap text-[13px] text-gray-800 font-sans leading-relaxed">{s.texto}</pre>)
+                        : <p className="text-sm text-gray-700 leading-relaxed">{previa(s.texto, p.cobertura_texto)}</p>}
                       <span className="text-xs text-purple-700 font-medium inline-flex items-center gap-0.5 mt-1">{open ? <>Fechar <ChevronUp className="w-3 h-3" /></> : <>Ver tudo <ChevronDown className="w-3 h-3" /></>}</span>
                     </button>
                   )}
@@ -120,7 +136,7 @@ export default function Instrucoes({ irPara }: { irPara: (aba: 'areas' | 'ensina
                 {!ed && (
                   <div className="flex gap-2">
                     {auto && <button type="button" onClick={() => irPara('areas')} className="px-2.5 py-1 rounded-lg border border-gray-300 text-xs font-medium text-gray-700 hover:bg-gray-50">Ir para Áreas</button>}
-                    <button type="button" onClick={() => editar(s)} className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg border border-gray-300 text-xs font-medium text-gray-700 hover:bg-gray-50"><Pencil className="w-3.5 h-3.5" />Editar</button>
+                    {!soMarcador && <button type="button" onClick={() => editar(s)} className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg border border-gray-300 text-xs font-medium text-gray-700 hover:bg-gray-50"><Pencil className="w-3.5 h-3.5" />Editar</button>}
                   </div>
                 )}
               </div>
@@ -147,6 +163,26 @@ export default function Instrucoes({ irPara }: { irPara: (aba: 'areas' | 'ensina
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+/** Seção Cobertura: o texto da seção com a lista gerada pelas Áreas no lugar do marcador */
+function TextoComCobertura({ texto, cobertura }: { texto: string; cobertura?: string }) {
+  const partes = texto.split('{{COBERTURA}}');
+  return (
+    <div className="space-y-2">
+      {partes.map((parte, i) => (
+        <div key={i} className="space-y-2">
+          {parte.trim() && <pre className="whitespace-pre-wrap text-[13px] text-gray-800 font-sans leading-relaxed">{parte.trim()}</pre>}
+          {i < partes.length - 1 && (
+            <div className="border-l-[3px] border-purple-400 bg-purple-50/60 rounded-r-lg px-3 py-2">
+              <div className="text-[11px] font-semibold text-purple-700 uppercase tracking-wide mb-1">Vem da aba Áreas de atendimento</div>
+              <pre className="whitespace-pre-wrap text-[13px] text-gray-800 font-sans leading-relaxed">{cobertura || '(as cidades aparecem aqui depois de configurar as Áreas)'}</pre>
+            </div>
+          )}
+        </div>
+      ))}
     </div>
   );
 }

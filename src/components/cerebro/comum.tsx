@@ -43,6 +43,9 @@ export interface PromptInfo {
   resumo: string | null;
   secoes: Secao[];
   cobertura_dinamica: boolean;
+  cobertura_texto?: string; // CEREBRO_TATI_V2
+  cobertura_como?: 'marcador' | 'secao' | 'bloco' | 'fim';
+  contradicoes?: { linha: number; texto: string }[];
   texto_final: string;
   tamanho: number;
   conhecimentos_ativos: number;

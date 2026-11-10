@@ -2,6 +2,7 @@
 
 // ===========================================
 // Cérebro da Tati — Chat de teste (CEREBRO_TATI_V1)
+// CEREBRO_TATI_V2: cidade pelo DDD aparece como "provável" (71 = Salvador, a cidade principal do DDD)
 // Simula a Tati com as instruções, áreas e conhecimentos salvos (+ o rascunho de "Ensinar"),
 // sem mandar nada para o WhatsApp, Kanban ou planilha.
 // ===========================================
@@ -119,7 +120,7 @@ export default function ChatTeste({ rascunho, limparRascunho, corrigir }: {
         <b className="block text-gray-900 mb-2">O que ela entendeu</b>
         {!ult ? <p className="text-gray-500 text-sm">Aparece aqui depois da primeira resposta.</p> : (
           <div className="divide-y divide-gray-100">
-            <Linha l="Cidade">{ult.cidade ? <b>{ult.cidade.nome}{ult.cidade.uf ? ` (${ult.cidade.uf})` : ''}{ult.cidade.pelo === 'ddd' ? <span className="font-normal text-gray-500"> · pelo DDD</span> : null}</b> : <span className="text-gray-500">não identificada</span>}</Linha>
+            <Linha l="Cidade">{ult.cidade ? <b>{ult.cidade.nome}{ult.cidade.uf ? ` (${ult.cidade.uf})` : ''}{ult.cidade.pelo === 'ddd' ? <span className="font-normal text-gray-500"> · provável, pelo DDD</span> : null}</b> : <span className="text-gray-500">não identificada</span>}</Linha>
             {ult.cidade && <Linha l="Atende?">{ult.cidade.atende ? <Pill cor="bg-green-50 text-green-700">Sim · {ult.cidade.modais.join(' e ')}</Pill> : <Pill cor="bg-gray-100 text-gray-600">Sem operação</Pill>}</Linha>}
             <Linha l="Já coletou">{coletou.length ? coletou.map((i) => i.l.toLowerCase()).join(', ') : '—'}</Linha>
             <Linha l="Falta">{falta.length ? falta.map((i) => i.l.toLowerCase()).join(', ') : 'nada'}</Linha>
