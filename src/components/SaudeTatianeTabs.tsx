@@ -2,11 +2,12 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { Activity, ShieldCheck, BookOpen, Skull } from 'lucide-react';
+import { Activity, ShieldCheck, BookOpen, Skull, Filter } from 'lucide-react';
 import clsx from 'clsx';
 
 const SUB_TABS = [
   { href: '/dashboard', label: 'Visão geral', icon: Activity },
+  { href: '/saude-tatiane/funil', label: 'Funil da Tati', icon: Filter }, // FUNIL_TATI_V1
   { href: '/saude-tatiane/supervisao', label: 'Supervisão IA', icon: ShieldCheck },
   { href: '/saude-tatiane/licoes', label: 'Lições & Versões', icon: BookOpen },
   { href: '/saude-tatiane/causas', label: 'Causas de churn', icon: Skull },
