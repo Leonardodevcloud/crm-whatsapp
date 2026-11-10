@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useAuth } from '@/lib/hooks';
-import { Columns3, ArrowLeft, BarChart3, Clock, ClipboardList, UserPlus, Activity, Send, Bike } from 'lucide-react';
+import { Columns3, ArrowLeft, BarChart3, Clock, ClipboardList, UserPlus, Activity, Send, Bike, Brain } from 'lucide-react';
 import clsx from 'clsx';
 
 const NAV_ITEMS = [
@@ -15,6 +15,7 @@ const NAV_ITEMS = [
   { href: '/leads-nao-iniciados', label: 'Cadastros', icon: ClipboardList },
   { href: '/alocacao', label: 'Alocação', icon: UserPlus },
   { href: '/disponiveis', label: 'Disponíveis', icon: Bike }, // DISPONIVEIS_V1
+  { href: '/cerebro-tati', label: 'Cérebro da Tati', icon: Brain }, // CEREBRO_TATI_V1
 ];
 
 export default function EmbedNav() {

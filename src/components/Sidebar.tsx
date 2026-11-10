@@ -4,7 +4,7 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useAuth } from '@/lib/hooks';
 import {
-  MessageCircle, LayoutGrid, LogOut, User, Menu, X, BarChart3, Clock, ClipboardList, Activity, Send, Bike,
+  MessageCircle, LayoutGrid, LogOut, User, Menu, X, BarChart3, Clock, ClipboardList, Activity, Send, Bike, Brain,
 } from 'lucide-react';
 import { useState } from 'react';
 import clsx from 'clsx';
@@ -17,6 +17,7 @@ const navItems = [
   { href: '/leads-nao-iniciados', label: 'Cadastros', icon: ClipboardList },
   { href: '/disponiveis', label: 'Motoboys Disponíveis', icon: Bike }, // DISPONIVEIS_V1
   { href: '/analytics', label: 'Analytics', icon: BarChart3 },
+  { href: '/cerebro-tati', label: 'Cérebro da Tati', icon: Brain }, // CEREBRO_TATI_V1
 ];
 
 export default function Sidebar() {
